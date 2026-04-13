@@ -2,12 +2,13 @@ import { chatCompletionJson } from "@/lib/ai/completion";
 import { metricsPromptBlock } from "@/lib/northwind/metrics";
 import { buildSchemaPromptExcerpt } from "@/lib/northwind/schema";
 import { buildConversationContext } from "@/lib/datatalk/query-intelligence";
-import { executeReadonlySelect } from "@/lib/datatalk/executor";
+import { CHAT_RESULT_PAGE_SIZE, executeReadonlySelect } from "@/lib/datatalk/executor";
 import { llmPipelineSchema, type LlmPipelineResult, type TrustReport } from "@/lib/datatalk/types";
 import { buildTrustReport } from "@/lib/datatalk/trust";
-import { validateSelectSql } from "@/lib/datatalk/sql-validator";
+import { validateSelectSql, type SqlValidationResult } from "@/lib/datatalk/sql-validator";
 import { sqlContextFollowUp } from "@/lib/datatalk/conversation-nudges";
 import { critiqueNorthwindSql, isSqlCritiqueEnabled } from "@/lib/datatalk/sql-critique";
+import { checkNarrativeNumericGrounding } from "@/lib/datatalk/narrative-consistency";
 
 type Turn = { role: "user" | "assistant"; text: string };
 
@@ -51,6 +52,7 @@ Vague or underspecified prompts:
 - Phrases like "regional breakdown", "orders by region", "order count by region" already specify the dimension (region). Use kind=answer with SQL: default to sales region path orders → employees → employee_territories → territories → region, unless they clearly mean ship-to geography (then use orders.ship_region or ship_country). Never ask whether they meant region versus "another dimension" — that is unhelpful over-clarification.
 - If several interpretations are equally likely (e.g. "sales" could mean revenue, units, or order count by product vs by customer), use kind=clarify with one question that names the fork (pick one).
 - For follow-ups like "what about X", "same for Y", "and the suppliers?", inherit tables, filters, and time window from the last assistant answer unless the user overrides.
+- Referential follow-ups ("what about them", "how about those", "and them?", "same thing for…", "they" / "it" pointing back): resolve who or what the user means from the prior user + assistant turns — usually the entities or dimension just discussed. In assistant_message, state that link in one short phrase (e.g. Here for the same top customers we ranked by revenue.) so the answer is explicit. Prefer kind=answer with SQL that adds insight for those referents: a breakdown, comparison, trend slice, or next-level drill-down — not a vague restatement. Use kind=clarify only when several prior referents are equally plausible.
 - Relative dates ("this year", "last quarter") do not match the 1990s sample literally — either clarify that the dataset is historical demo data or answer on full sample and say so in assumptions.
 
 Meta and discovery questions (what can you do, what insights are available, how does this work):
@@ -58,6 +60,8 @@ Meta and discovery questions (what can you do, what insights are available, how 
 - Include 4–6 concrete example prompts the user could paste next (e.g. revenue by category, top customers by order total, monthly order counts, freight by shipper, products low in stock). Do not refuse for lack of a "specific question" — you are the guide. For this pattern use kind=answer, sql null, and clarify_question null; weave any gentle nudge (e.g. pick revenue vs products) into assistant_message.
 
 Data-backed answers (kind=answer with non-null sql):
+- Reliability first: wrong numbers are worse than no numbers. Do NOT state specific totals, counts, currency amounts, or percentages in assistant_message — you have not seen query results yet. Describe what the query returns in plain language (e.g. "Revenue by category, highest first") and list assumptions; the app attaches real figures from the database after execution.
+- Never invent statistics. If the question cannot be answered without ambiguity, prefer kind=clarify.
 - In assistant_message, give findings and definitions only (no trailing "what next" question). The app will append a short row summary and then a suggested follow-up question tied to the query.
 
 Known metrics (prefer citing metric_ids when you use them):
@@ -118,28 +122,144 @@ export type OrchestratorResult = {
   metric_ids?: string[];
   assumptions?: string[];
   clarify_question?: string | null;
+  /** Offered when trust is medium on a data-backed answer — user can confirm strict verification */
+  trustUpgradeSuggestion?: string;
+  /** More rows exist — client sends `resultOffset` for the next page */
+  resultHasMore?: boolean;
+  /** Pass as `resultOffset` on the next request to fetch the next page (15 rows) */
+  resultNextOffset?: number | null;
 };
 
-export async function runOrchestrator(input: {
-  turns: Turn[];
-  message: string;
+async function runPaginationPage(input: {
+  lastDataSql: string;
+  resultOffset: number;
 }): Promise<OrchestratorResult> {
-  const context = buildConversationContext(input.turns, input.message);
-  let hadRepair = false;
-
-  const model = await runModel(context);
-
-  if (model.kind === "clarify") {
+  const offset = Math.max(0, input.resultOffset);
+  const validation = validateSelectSql(input.lastDataSql.trim());
+  if (!validation.ok) {
     const trust = buildTrustReport({
+      pipeline: "validation_failed",
       validationPassed: false,
-      validationDetails: ["No SQL executed — clarification requested."],
+      validationDetails: validation.errors,
       rowCount: 0,
       limited: false,
       executionMs: 0,
       skippedExecution: true,
       hadRepair: false,
-      joinHeuristic: false,
+      joinHeuristic: joinHeuristic(input.lastDataSql),
     });
+    return {
+      assistant_message: "Could not re-run the previous query for pagination.",
+      kind: "answer",
+      trust,
+      resultHasMore: false,
+      resultNextOffset: null,
+    };
+  }
+
+  const sql = validation.normalizedSql;
+  const exec = await executeReadonlySelect(sql, {
+    maxRows: CHAT_RESULT_PAGE_SIZE,
+    offset,
+  });
+
+  if (!exec.ok) {
+    const trust = buildTrustReport({
+      pipeline: "execution_failed",
+      validationPassed: true,
+      validationDetails: ["Parsed SQL and allowlist checks passed."],
+      rowCount: 0,
+      limited: false,
+      executionMs: 0,
+      skippedExecution: true,
+      hadRepair: false,
+      joinHeuristic: joinHeuristic(sql),
+    });
+    return {
+      assistant_message: `Could not load the next rows: ${exec.error}`,
+      kind: "answer",
+      sql,
+      trust,
+      resultHasMore: false,
+      resultNextOffset: null,
+    };
+  }
+
+  const hasMore = exec.limited;
+  const nextOffset = hasMore ? offset + CHAT_RESULT_PAGE_SIZE : null;
+  const rangeStart = offset + (exec.rowCount > 0 ? 1 : 0);
+  const rangeEnd = offset + exec.rowCount;
+
+  const rowPreview =
+    exec.rowCount === 0
+      ? "No more rows for this query."
+      : `Returned ${exec.rowCount} row(s) (rows ${rangeStart}–${rangeEnd} of the full result; ${CHAT_RESULT_PAGE_SIZE} per page).`;
+
+  const narrative = "Next page of results from your previous query.";
+  const narrativeGrounding = checkNarrativeNumericGrounding(narrative, exec.rows);
+
+  const trust = buildTrustReport({
+    pipeline: "data",
+    validationPassed: true,
+    validationDetails: ["Parsed SQL", "Allowlisted tables/columns", "Single SELECT"],
+    rowCount: exec.rowCount,
+    limited: exec.limited,
+    executionMs: exec.ms,
+    skippedExecution: false,
+    hadRepair: false,
+    joinHeuristic: joinHeuristic(sql),
+    narrativeGrounding,
+    strictVerification: false,
+  });
+
+  return {
+    assistant_message: `${narrative}\n\n${rowPreview}\n\n${sqlContextFollowUp(sql)}`,
+    kind: "answer",
+    sql,
+    rows: exec.rows,
+    trust,
+    resultHasMore: hasMore,
+    resultNextOffset: nextOffset,
+  };
+}
+
+export async function runOrchestrator(input: {
+  turns: Turn[];
+  message: string;
+  /** From user-prompt keyword sweep (e.g. frustration tone). */
+  toneHints?: string[];
+  /** User confirmed — extra SQL critique + trust boost when checks pass */
+  strictVerification?: boolean;
+  /** Last assistant message `sql` from history — used if strict verification produces a query that fails at runtime */
+  lastSuccessfulDataSql?: string | null;
+  /** Skip LLM and fetch next page of last data SQL */
+  resultOffset?: number;
+  lastDataSql?: string | null;
+}): Promise<OrchestratorResult> {
+  if (
+    (input.resultOffset ?? 0) > 0 &&
+    typeof input.lastDataSql === "string" &&
+    input.lastDataSql.trim().length > 0
+  ) {
+    return runPaginationPage({
+      lastDataSql: input.lastDataSql,
+      resultOffset: input.resultOffset ?? 0,
+    });
+  }
+
+  const extraHints = [...(input.toneHints ?? [])];
+  if (input.strictVerification) {
+    extraHints.push(
+      "STRICT VERIFICATION: The user asked to re-run with strict verification. Match the same analytical intent as their prior question when possible. Output one safe SELECT; the server runs an extra SQL review.",
+    );
+  }
+  const context = buildConversationContext(input.turns, input.message, extraHints);
+  let hadRepair = false;
+
+  const model = await runModel(context);
+
+  if (model.kind === "clarify") {
+    const trust = buildTrustReport({ pipeline: "clarify" });
     return {
       assistant_message: model.clarify_question
         ? `${model.assistant_message}\n\n${model.clarify_question}`
@@ -152,31 +272,13 @@ export async function runOrchestrator(input: {
   }
 
   if (model.kind === "refuse") {
-    const trust = buildTrustReport({
-      validationPassed: false,
-      validationDetails: ["Model refused to generate SQL."],
-      rowCount: 0,
-      limited: false,
-      executionMs: 0,
-      skippedExecution: true,
-      hadRepair: false,
-      joinHeuristic: false,
-    });
+    const trust = buildTrustReport({ pipeline: "refused" });
     return { assistant_message: model.assistant_message, kind: "refuse", trust };
   }
 
   let sql = typeof model.sql === "string" ? model.sql.trim() : "";
   if (!sql) {
-    const trust = buildTrustReport({
-      validationPassed: false,
-      validationDetails: ["Model returned answer without SQL."],
-      rowCount: 0,
-      limited: false,
-      executionMs: 0,
-      skippedExecution: true,
-      hadRepair: false,
-      joinHeuristic: false,
-    });
+    const trust = buildTrustReport({ pipeline: "conversational" });
     return {
       assistant_message: model.assistant_message || "I could not produce a query for that request.",
       kind: "answer",
@@ -187,7 +289,10 @@ export async function runOrchestrator(input: {
     };
   }
 
-  if (isSqlCritiqueEnabled() && joinHeuristic(sql)) {
+  const sqlAfterLlm = sql;
+  const runSqlCritique =
+    input.strictVerification || (isSqlCritiqueEnabled() && joinHeuristic(sql));
+  if (runSqlCritique) {
     try {
       const cr = await critiqueNorthwindSql({ userQuestion: input.message, sql });
       const rev = typeof cr.revised_sql === "string" ? cr.revised_sql.trim() : "";
@@ -201,6 +306,7 @@ export async function runOrchestrator(input: {
       /* optional second LLM; ignore */
     }
   }
+  const critiqueReplacedSql = sql !== sqlAfterLlm;
 
   let validation = validateSelectSql(sql);
   let failedValidationErrors = !validation.ok ? [...validation.errors] : [];
@@ -212,6 +318,7 @@ export async function runOrchestrator(input: {
       failedValidationErrors = !validation.ok ? [...validation.errors] : failedValidationErrors;
     } catch (err) {
       const trust = buildTrustReport({
+        pipeline: "validation_failed",
         validationPassed: false,
         validationDetails: failedValidationErrors,
         rowCount: 0,
@@ -231,6 +338,7 @@ export async function runOrchestrator(input: {
 
   if (!validation.ok) {
     const trust = buildTrustReport({
+      pipeline: "validation_failed",
       validationPassed: false,
       validationDetails: validation.errors,
       rowCount: 0,
@@ -248,9 +356,62 @@ export async function runOrchestrator(input: {
     };
   }
 
-  const exec = await executeReadonlySelect(validation.normalizedSql);
+  type OkValidation = Extract<SqlValidationResult, { ok: true }>;
+  const executionAttempts: { key: "primary" | "pre_critique" | "previous_turn"; v: OkValidation }[] = [];
+  const seenNorm = new Set<string>();
+  const pushAttempt = (
+    key: "primary" | "pre_critique" | "previous_turn",
+    res: SqlValidationResult,
+  ) => {
+    if (!res.ok) return;
+    if (seenNorm.has(res.normalizedSql)) return;
+    seenNorm.add(res.normalizedSql);
+    executionAttempts.push({ key, v: res });
+  };
+  pushAttempt("primary", validation);
+  if (critiqueReplacedSql) {
+    pushAttempt("pre_critique", validateSelectSql(sqlAfterLlm));
+  }
+  if (input.strictVerification && input.lastSuccessfulDataSql?.trim()) {
+    pushAttempt("previous_turn", validateSelectSql(input.lastSuccessfulDataSql.trim()));
+  }
+
+  let exec = await executeReadonlySelect(validation.normalizedSql, {
+    maxRows: CHAT_RESULT_PAGE_SIZE,
+    offset: 0,
+  });
+  const primaryExecError = exec.ok ? "" : exec.error;
+  let usedAttemptKey: "primary" | "pre_critique" | "previous_turn" = "primary";
+  let usedValidation: OkValidation = validation;
+  let lastFallbackError = "";
+
+  if (!exec.ok && executionAttempts.length > 1) {
+    for (let i = 1; i < executionAttempts.length; i += 1) {
+      const a = executionAttempts[i];
+      const e = await executeReadonlySelect(a.v.normalizedSql, {
+        maxRows: CHAT_RESULT_PAGE_SIZE,
+        offset: 0,
+      });
+      if (!e.ok) {
+        lastFallbackError = e.error;
+      }
+      if (e.ok) {
+        exec = e;
+        usedAttemptKey = a.key;
+        usedValidation = a.v;
+        if (a.key === "pre_critique") {
+          sql = sqlAfterLlm;
+        } else if (a.key === "previous_turn" && input.lastSuccessfulDataSql?.trim()) {
+          sql = input.lastSuccessfulDataSql.trim();
+        }
+        break;
+      }
+    }
+  }
+
   if (!exec.ok) {
     const trust = buildTrustReport({
+      pipeline: "execution_failed",
       validationPassed: true,
       validationDetails: ["Parsed SQL and allowlist checks passed."],
       rowCount: 0,
@@ -261,7 +422,7 @@ export async function runOrchestrator(input: {
       joinHeuristic: joinHeuristic(sql),
     });
     return {
-      assistant_message: `The query could not be executed: ${exec.error}`,
+      assistant_message: `The query could not be executed: ${primaryExecError || lastFallbackError || exec.error}`,
       kind: "answer",
       sql: validation.normalizedSql,
       trust,
@@ -271,7 +432,26 @@ export async function runOrchestrator(input: {
     };
   }
 
+  const executionFallbackNote =
+    usedAttemptKey === "pre_critique"
+      ? "**Note:** The extra SQL review suggested a revision that failed at runtime; results use the **original** model query instead.\n\n"
+      : usedAttemptKey === "previous_turn"
+        ? "**Note:** The strict verification run produced a query that failed at runtime; showing results from your **previous successful** query instead.\n\n"
+        : "";
+
+  const hasMore = exec.limited;
+  const resultNextOffset = hasMore ? CHAT_RESULT_PAGE_SIZE : null;
+
+  const rowPreview =
+    exec.rows.length === 0
+      ? "No rows matched."
+      : `Returned ${exec.rowCount} row(s)${exec.limited ? ` (up to ${CHAT_RESULT_PAGE_SIZE} per answer; more available — use Next ${CHAT_RESULT_PAGE_SIZE})` : ""}.`;
+
+  const trimmedNarrative = model.assistant_message.trim();
+  const narrativeGrounding = checkNarrativeNumericGrounding(trimmedNarrative, exec.rows);
+
   const trust = buildTrustReport({
+    pipeline: "data",
     validationPassed: true,
     validationDetails: ["Parsed SQL", "Allowlisted tables/columns", "Single SELECT"],
     rowCount: exec.rowCount,
@@ -280,23 +460,33 @@ export async function runOrchestrator(input: {
     skippedExecution: false,
     hadRepair,
     joinHeuristic: joinHeuristic(sql),
+    narrativeGrounding,
+    strictVerification: input.strictVerification === true,
   });
 
-  const rowPreview =
-    exec.rows.length === 0
-      ? "No rows matched."
-      : `Returned ${exec.rowCount} row(s)${exec.limited ? " (capped)" : ""}.`;
+  const trustUpgradeSuggestion =
+    trust.level === "medium" &&
+    trust.pipeline === "data" &&
+    !input.strictVerification &&
+    narrativeGrounding.ok !== false
+      ? "Confidence is medium (e.g. joins, limits, or repairs). If you want a high-confidence pass, confirm below — we will re-run with strict verification (extra SQL review). When checks pass, trust can reach high."
+      : undefined;
 
-  const trimmedNarrative = model.assistant_message.trim();
+  const reliabilityBanner = !narrativeGrounding.ok
+    ? "**Reliability:** Some numbers in the text below may not match the database — **use the result summary and table as the source of truth.**\n\n"
+    : "";
 
   return {
-    assistant_message: `${trimmedNarrative}\n\n${rowPreview}\n\n${sqlContextFollowUp(validation.normalizedSql)}`,
+    assistant_message: `${executionFallbackNote}${reliabilityBanner}${trimmedNarrative}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
     kind: "answer",
-    sql: validation.normalizedSql,
+    sql: usedValidation.normalizedSql,
     rows: exec.rows,
     trust,
     plan_summary: model.plan_summary,
     metric_ids: model.metric_ids,
     assumptions: model.assumptions,
+    trustUpgradeSuggestion,
+    resultHasMore: hasMore,
+    resultNextOffset,
   };
 }

@@ -10,10 +10,14 @@ export type ExecutionResult =
     }
   | { ok: false; error: string };
 
-const DEFAULT_MAX_ROWS = 500;
+/** Chat answers never return more than this many rows per request (pagination uses offset). */
+export const CHAT_RESULT_PAGE_SIZE = 15;
+
+const DEFAULT_MAX_ROWS = CHAT_RESULT_PAGE_SIZE;
 const DEFAULT_TIMEOUT_MS = 5000;
 
-function getReadonlyUrl(): string | null {
+/** Server-only: first configured read-capable Postgres URL (same resolution as execution). */
+export function getReadonlyDatabaseUrl(): string | null {
   const candidates = [
     process.env.DATABASE_URL_READONLY,
     process.env.DATABASE_TRANSACTION_URL,
@@ -26,9 +30,13 @@ function getReadonlyUrl(): string | null {
   return null;
 }
 
+function getReadonlyUrl(): string | null {
+  return getReadonlyDatabaseUrl();
+}
+
 export async function executeReadonlySelect(
   validatedSql: string,
-  options?: { maxRows?: number; timeoutMs?: number },
+  options?: { maxRows?: number; timeoutMs?: number; offset?: number },
 ): Promise<ExecutionResult> {
   const url = getReadonlyUrl();
   if (!url) {
@@ -41,7 +49,8 @@ export async function executeReadonlySelect(
 
   const maxRows = options?.maxRows ?? DEFAULT_MAX_ROWS;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const wrapped = `select * from (${validatedSql}) as datatalk_inner limit ${maxRows + 1}`;
+  const offset = Math.max(0, Math.floor(options?.offset ?? 0));
+  const wrapped = `select * from (${validatedSql}) as datatalk_inner limit ${maxRows + 1} offset ${offset}`;
 
   const sql = postgres(url, {
     max: 1,

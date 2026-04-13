@@ -3,7 +3,11 @@ import { retrieveSchemaSnippets } from "@/lib/northwind/schema-retrieval";
 type ChatTurn = { role: "user" | "assistant"; text: string };
 
 /** Build a compact transcript for the model + lightweight reference hints. */
-export function buildConversationContext(turns: ChatTurn[], newUserMessage: string): string {
+export function buildConversationContext(
+  turns: ChatTurn[],
+  newUserMessage: string,
+  extraHints?: string[],
+): string {
   const lines: string[] = [];
   const recent = turns.slice(-8);
   for (const t of recent) {
@@ -12,7 +16,10 @@ export function buildConversationContext(turns: ChatTurn[], newUserMessage: stri
   lines.push(`User: ${newUserMessage}`);
 
   const lower = newUserMessage.toLowerCase();
-  const hints: string[] = [];
+  const trimmed = newUserMessage.trim();
+  const words = trimmed ? trimmed.split(/\s+/).filter(Boolean) : [];
+  const wordCount = words.length;
+  const hints: string[] = [...(extraHints ?? [])];
 
   if (
     /\b(what (can|do) you|what insights|what data|capabilities|how does (this|it) work|what are you|who are you|help me (get started|understand))\b/i.test(
@@ -23,9 +30,19 @@ export function buildConversationContext(turns: ChatTurn[], newUserMessage: stri
       "Discovery / meta question: kind=answer with sql null — briefly explain Northwind analytics scope and list several concrete example questions the user could ask next; do not refuse for being unspecific.",
     );
   }
-  if (/\bthem\b|\bthose\b|\bit\b|\bsame\b/i.test(lower) && recent.length) {
+  const referentialFollowUp =
+    recent.length > 0 &&
+    (/\b(what|how) about (them|those|these|it|that)\b/i.test(lower) ||
+      /\b(and|also) (them|those|it)\b/i.test(lower) ||
+      /\b(them|those|these)\b/i.test(lower) ||
+      /\bsame (thing|for|as|query|breakdown|chart|list)\b/i.test(lower) ||
+      /\bthey\b/i.test(lower) ||
+      (wordCount <= 8 && /\bit\b/i.test(lower)) ||
+      /\bsame\b/i.test(lower));
+
+  if (referentialFollowUp) {
     hints.push(
-      'The user may be referring to the previous topic or entities — reuse filters, tables, and time windows from the last successful answer when it is reasonable.',
+      "Referential follow-up: the user points at topics or entities already in this thread — usually the last assistant answer. Infer the referent(s); in assistant_message name who or what 'they/them/those' means. Reuse grain, filters, and time scope from that prior answer unless the user changes them. Prefer kind=answer with SQL that adds insight (drill-down, comparison, another dimension, or trend) for those entities — not a bare repeat. Use kind=clarify only if several interpretations are equally likely.",
     );
   }
   if (
@@ -38,13 +55,9 @@ export function buildConversationContext(turns: ChatTurn[], newUserMessage: stri
       "Superlative question: interpret as an objective extremum on the numeric measure from the prior answer (usually 'best' = highest value). Reuse the same metric, grouping, and filters. Prefer SQL that returns the top row(s) with ORDER BY ... LIMIT, not a refusal for 'subjective' criteria.",
     );
   }
-  if (newUserMessage.trim().length < 6) {
+  if (trimmed.length < 6) {
     hints.push("The latest message is very short — if intent is unclear, choose kind=clarify.");
   }
-
-  const trimmed = newUserMessage.trim();
-  const words = trimmed ? trimmed.split(/\s+/).filter(Boolean) : [];
-  const wordCount = words.length;
 
   if (recent.length && /^(and|also|what about|how about)\b/i.test(trimmed)) {
     hints.push(
@@ -52,7 +65,7 @@ export function buildConversationContext(turns: ChatTurn[], newUserMessage: stri
     );
   }
 
-  if (wordCount > 0 && wordCount <= 4 && trimmed.length >= 6) {
+  if (wordCount > 0 && wordCount <= 4 && trimmed.length >= 6 && !referentialFollowUp) {
     hints.push(
       "Very few words — if several SQL interpretations are plausible, kind=clarify with one concrete question; if one interpretation is clearly standard for Northwind, kind=answer and list assumptions (defaults, no date filter = full sample, etc.).",
     );

@@ -46,17 +46,28 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* DataTalk brand (dashboard + marketing) */
+  --color-dt-navy: var(--dt-navy);
+  --color-dt-surface: var(--dt-surface);
+  --color-dt-teal: var(--dt-teal);
+  --color-dt-teal-muted: var(--dt-teal-muted);
+  --color-dt-alert: var(--dt-alert);
 }
 
 :root {
+  --dt-navy: #1a202c;
+  --dt-surface: #f8f9fa;
+  --dt-teal: #2d7a78;
+  --dt-teal-muted: #3d9a96;
+  --dt-alert: #ea580c;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.52 0.12 155);
-  --primary-foreground: oklch(0.99 0.02 155);
+  --primary: oklch(0.45 0.09 195);
+  --primary-foreground: oklch(0.99 0.01 195);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
