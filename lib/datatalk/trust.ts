@@ -15,6 +15,16 @@ type DataPathInput = {
   narrativeGrounding?: NarrativeGroundingResult;
   /** User asked for stricter checks — extra SQL review + score boost when grounding is clean */
   strictVerification?: boolean;
+  /** Postgres EXPLAIN succeeded before SELECT */
+  explainValidated?: boolean;
+  /** Second-pass intent model ran (not skipped by error) */
+  intentVerifierRan?: boolean;
+  /** Verifier LLM failed — execution proceeded without intent score */
+  intentVerifierError?: boolean;
+  intentConfidence?: number;
+  intentAligned?: boolean;
+  /** 0 rows: possible over-filter or date mismatch vs user wording */
+  emptyResultSet?: boolean;
 };
 
 type SimplePipelineInput = {
@@ -150,6 +160,11 @@ function computeGapsToHighDataPath(input: DataPathInput, level: TrustReport["lev
       "Joins cost a trust point: narrow grain (one row per entity) or switch to SUM/COUNT subqueries to avoid fan-out.",
     );
   }
+  if (input.emptyResultSet) {
+    gaps.push(
+      "Zero rows: confirm filters (dates, categories) match the Northwind sample — “no results” can hide a wrong year or typo.",
+    );
+  }
   if (input.limited) {
     gaps.push(
       "Only a page of rows is shown: for a definitive total across all rows, ask for an aggregate (e.g. SUM) instead of raw lines.",
@@ -188,6 +203,22 @@ function buildDataPathTrust(input: DataPathInput): TrustReport {
   } else {
     reasons.push("SQL did not pass validation.");
   }
+  if (input.explainValidated) {
+    reasons.push("Database EXPLAIN dry-run succeeded before execution.");
+  }
+  if (input.intentVerifierRan) {
+    const ic = input.intentConfidence;
+    const aligned = input.intentAligned !== false;
+    reasons.push(
+      typeof ic === "number"
+        ? `Intent verification: confidence ${ic}/100${aligned ? "" : " — flagged mismatch(es)"}.`
+        : "Intent verification completed.",
+    );
+  }
+  if (input.intentVerifierError) {
+    score -= 1;
+    reasons.push("Intent verification was skipped or failed — we still validated SQL and ran read-only.");
+  }
   if (!input.skippedExecution) {
     score += 1;
     reasons.push(`Executed in ${input.executionMs}ms, returned ${input.rowCount} row(s).`);
@@ -197,6 +228,12 @@ function buildDataPathTrust(input: DataPathInput): TrustReport {
     }
   } else {
     reasons.push("Execution was skipped (no SQL or validation failed).");
+  }
+  if (input.emptyResultSet && !input.skippedExecution) {
+    score -= 1;
+    reasons.push(
+      "Query returned zero rows — double-check filters vs sample dates (1990s) and category/region names.",
+    );
   }
   if (input.joinHeuristic) {
     score -= 1;
@@ -237,6 +274,12 @@ function buildDataPathTrust(input: DataPathInput): TrustReport {
   if (grounding && !grounding.ok) confidenceScore = Math.min(confidenceScore, 40);
   if (strictEligible && level === "high") confidenceScore = Math.max(confidenceScore, 86);
   else if (strictEligible && level === "medium") confidenceScore = Math.max(confidenceScore, 72);
+  if (input.explainValidated) confidenceScore = Math.min(100, confidenceScore + 2);
+  if (input.intentVerifierRan && input.intentAligned !== false && typeof input.intentConfidence === "number") {
+    confidenceScore = Math.round((confidenceScore + input.intentConfidence) / 2);
+  }
+  if (input.intentVerifierError) confidenceScore = Math.max(0, confidenceScore - 4);
+  if (input.emptyResultSet) confidenceScore = Math.max(0, confidenceScore - 8);
   confidenceScore = Math.max(0, Math.min(100, Math.round(confidenceScore)));
 
   return {

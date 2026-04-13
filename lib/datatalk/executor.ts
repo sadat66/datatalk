@@ -78,3 +78,41 @@ export async function executeReadonlySelect(
     await sql.end({ timeout: 2 }).catch(() => undefined);
   }
 }
+
+/** Run PostgreSQL EXPLAIN on the same statement shape as execution — validates server-side without returning data rows. */
+export function isExplainValidateEnabled(): boolean {
+  const v = process.env.DATATALK_EXPLAIN_VALIDATE?.trim().toLowerCase();
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return true;
+}
+
+export async function explainValidateReadonlySelect(validatedSql: string): Promise<
+  { ok: true } | { ok: false; error: string }
+> {
+  const url = getReadonlyUrl();
+  if (!url) {
+    return {
+      ok: false,
+      error:
+        "No database URL for EXPLAIN. Set DATABASE_URL_READONLY (preferred), or DATABASE_TRANSACTION_URL, or DIRECT_DATABASE_URL.",
+    };
+  }
+
+  const wrapped = `explain (costs off, verbose off) select * from (${validatedSql}) as datatalk_explain_inner limit 1`;
+
+  const sql = postgres(url, {
+    max: 1,
+    prepare: false,
+    connection: { statement_timeout: 5000 },
+  });
+
+  try {
+    await sql.unsafe(wrapped);
+    return { ok: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  } finally {
+    await sql.end({ timeout: 2 }).catch(() => undefined);
+  }
+}

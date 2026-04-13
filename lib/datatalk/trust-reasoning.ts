@@ -28,7 +28,7 @@ export function buildTrustReasoningSections(trust: TrustReport): TrustReasoningS
   const valPassed = trust.validation.passed;
   sections.push({
     id: "query_validation",
-    title: "Query validation",
+    title: "Query validation (parse, allowlist, EXPLAIN)",
     body: valPassed
       ? `Passed — ${trust.validation.details.join(" · ")}`
       : `Did not pass — ${trust.validation.details.join(" · ")}`,

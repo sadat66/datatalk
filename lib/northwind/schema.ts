@@ -89,6 +89,25 @@ export const NORTHWIND_TABLE_COLUMNS: Record<string, readonly string[]> = {
   us_states: ["state_id", "state_name", "state_abbr", "state_region"],
   customer_customer_demo: ["customer_id", "customer_type_id"],
   customer_demographics: ["customer_type_id", "customer_desc"],
+  /**
+   * Curated join of orders × order_lines × products × categories — use instead of manual 4-way joins when possible.
+   * Backed by `datatalk_order_details_extended` view in the database.
+   */
+  datatalk_order_details_extended: [
+    "order_id",
+    "product_id",
+    "unit_price",
+    "quantity",
+    "discount",
+    "order_date",
+    "customer_id",
+    "order_freight",
+    "product_name",
+    "units_in_stock",
+    "discontinued",
+    "category_id",
+    "category_name",
+  ],
 } as const;
 
 export const NORTHWIND_TABLES = Object.keys(NORTHWIND_TABLE_COLUMNS) as (keyof typeof NORTHWIND_TABLE_COLUMNS)[];
@@ -100,6 +119,16 @@ export function buildSchemaPromptExcerpt(): string {
     lines.push(`${table}: ${cols.join(", ")}`);
   }
   return lines.join("\n");
+}
+
+/** Short typing hints so the model does not mis-handle booleans and money fields. */
+export function buildColumnSemanticsHint(): string {
+  return [
+    "Column semantics: order_details.unit_price is numeric; quantity is integer; discount is a fraction 0–1.",
+    "products.discontinued is 0/1 (treat as boolean filter). products.units_in_stock / units_on_order / reorder_level are integers.",
+    "orders.order_date and other *date fields are date/timestamp; Northwind sample years are mostly 1996–1998.",
+    "Revenue for a line is typically unit_price * quantity * (1 - discount).",
+  ].join("\n");
 }
 
 export function buildSqlWhitelist(): { tables: string[]; columns: string[] } {

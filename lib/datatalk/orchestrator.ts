@@ -1,8 +1,19 @@
 import { chatCompletionJson } from "@/lib/ai/completion";
 import { metricsPromptBlock } from "@/lib/northwind/metrics";
-import { buildSchemaPromptExcerpt } from "@/lib/northwind/schema";
+import { buildColumnSemanticsHint, buildSchemaPromptExcerpt } from "@/lib/northwind/schema";
+import { goldStandardExamplesBlock } from "@/lib/northwind/gold-examples";
 import { buildConversationContext } from "@/lib/datatalk/query-intelligence";
-import { CHAT_RESULT_PAGE_SIZE, executeReadonlySelect } from "@/lib/datatalk/executor";
+import {
+  CHAT_RESULT_PAGE_SIZE,
+  executeReadonlySelect,
+  explainValidateReadonlySelect,
+  isExplainValidateEnabled,
+} from "@/lib/datatalk/executor";
+import {
+  getConfidenceRunThreshold,
+  isIntentVerifierEnabled,
+  verifySqlAgainstIntent,
+} from "@/lib/datatalk/intent-verifier";
 import { llmPipelineSchema, type LlmPipelineResult, type TrustReport } from "@/lib/datatalk/types";
 import { buildTrustReport } from "@/lib/datatalk/trust";
 import { validateSelectSql, type SqlValidationResult } from "@/lib/datatalk/sql-validator";
@@ -19,7 +30,7 @@ You must respond with a single JSON object (no markdown) using this shape:
   "assistant_message": string (short, business-friendly),
   "clarify_question": string | null (one targeted question if kind is clarify),
   "sql": string | null (a single PostgreSQL SELECT if kind is answer; otherwise null),
-  "plan_summary": string | null,
+  "plan_summary": string | null (required when sql is non-null: one sentence "explain-back" describing what the query returns in plain English — e.g. "Total revenue by category for all years in the sample."),
   "metric_ids": string[] | null (subset of known metric ids when applicable),
   "assumptions": string[] | null
 }
@@ -66,6 +77,13 @@ Data-backed answers (kind=answer with non-null sql):
 
 Known metrics (prefer citing metric_ids when you use them):
 ${metricsPromptBlock()}
+
+${buildColumnSemanticsHint()}
+
+Semantic layer: prefer the view \`datatalk_order_details_extended\` when you need order lines with product and category pre-joined — fewer join errors than wiring tables manually.
+
+Few-shot gold examples (use as patterns):
+${goldStandardExamplesBlock()}
 
 Allowlisted schema (tables and columns):
 ${buildSchemaPromptExcerpt()}
@@ -356,6 +374,85 @@ export async function runOrchestrator(input: {
     };
   }
 
+  const validatedSql = validation.normalizedSql;
+  let explainValidated = false;
+  let intentVerifierRan = false;
+  let intentVerifierError = false;
+  let intentConfidence: number | undefined;
+  let intentAligned: boolean | undefined;
+
+  if (isExplainValidateEnabled()) {
+    const exRes = await explainValidateReadonlySelect(validatedSql);
+    if (!exRes.ok) {
+      const trust = buildTrustReport({
+        pipeline: "execution_failed",
+        validationPassed: true,
+        validationDetails: [
+          "Parsed SQL and allowlist checks passed.",
+          `EXPLAIN dry-run failed: ${exRes.error}`,
+        ],
+        rowCount: 0,
+        limited: false,
+        executionMs: 0,
+        skippedExecution: true,
+        hadRepair,
+        joinHeuristic: joinHeuristic(validatedSql),
+      });
+      return {
+        assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${exRes.error}`,
+        kind: "answer",
+        sql: validatedSql,
+        trust,
+        plan_summary: model.plan_summary,
+        metric_ids: model.metric_ids,
+        assumptions: model.assumptions,
+      };
+    }
+    explainValidated = true;
+  }
+
+  if (isIntentVerifierEnabled()) {
+    try {
+      const iv = await verifySqlAgainstIntent({
+        userQuestion: input.message,
+        sql: validatedSql,
+      });
+      if (iv == null) {
+        intentVerifierError = true;
+      } else {
+        intentVerifierRan = true;
+        intentConfidence = iv.confidence_0_100;
+        intentAligned = iv.aligned;
+        const threshold = getConfidenceRunThreshold();
+        const shouldHold = iv.confidence_0_100 < threshold || iv.aligned === false;
+        if (shouldHold) {
+          const clarifyQ =
+            iv.clarify_suggestion?.trim() ||
+            `Which interpretation should we use? (Verification confidence ${iv.confidence_0_100}% is below the ${threshold}% run threshold.)`;
+          const intro = `I have not run the query against the database — intent verification scored ${iv.confidence_0_100}% confidence${iv.aligned === false ? " and flagged alignment issues" : ""} (threshold ${threshold}%).`;
+          const mismatchLine =
+            iv.mismatches.length > 0
+              ? `Potential mismatches: ${iv.mismatches.slice(0, 5).join("; ")}`
+              : "";
+          const explainLine = iv.plain_explanation
+            ? `Proposed SQL would: ${iv.plain_explanation}`
+            : "";
+          const assistant_message = [intro, mismatchLine, explainLine].filter(Boolean).join("\n\n");
+          const trust = buildTrustReport({ pipeline: "clarify" });
+          return {
+            assistant_message: `${assistant_message}\n\n${clarifyQ}`,
+            kind: "clarify",
+            trust,
+            plan_summary: model.plan_summary,
+            clarify_question: clarifyQ,
+          };
+        }
+      }
+    } catch {
+      intentVerifierError = true;
+    }
+  }
+
   type OkValidation = Extract<SqlValidationResult, { ok: true }>;
   const executionAttempts: { key: "primary" | "pre_critique" | "previous_turn"; v: OkValidation }[] = [];
   const seenNorm = new Set<string>();
@@ -449,11 +546,26 @@ export async function runOrchestrator(input: {
 
   const trimmedNarrative = model.assistant_message.trim();
   const narrativeGrounding = checkNarrativeNumericGrounding(trimmedNarrative, exec.rows);
+  const validationDetails: string[] = [
+    "Parsed SQL",
+    "Allowlisted tables/columns",
+    "Single SELECT",
+  ];
+  if (explainValidated) validationDetails.push("EXPLAIN dry-run succeeded (server-side)");
+  if (intentVerifierRan && typeof intentConfidence === "number") {
+    validationDetails.push(`Intent verification confidence ${intentConfidence}/100`);
+  }
+  if (intentVerifierError) validationDetails.push("Intent verification skipped or failed — SQL still statically validated");
+  if (usedAttemptKey !== "primary") {
+    validationDetails.push(
+      "Runtime fallback: a different validated SQL ran after the primary failed — EXPLAIN and intent checks targeted the primary candidate.",
+    );
+  }
 
   const trust = buildTrustReport({
     pipeline: "data",
     validationPassed: true,
-    validationDetails: ["Parsed SQL", "Allowlisted tables/columns", "Single SELECT"],
+    validationDetails,
     rowCount: exec.rowCount,
     limited: exec.limited,
     executionMs: exec.ms,
@@ -462,6 +574,12 @@ export async function runOrchestrator(input: {
     joinHeuristic: joinHeuristic(sql),
     narrativeGrounding,
     strictVerification: input.strictVerification === true,
+    explainValidated: explainValidated || undefined,
+    intentVerifierRan: intentVerifierRan || undefined,
+    intentVerifierError: intentVerifierError || undefined,
+    intentConfidence,
+    intentAligned,
+    emptyResultSet: exec.rowCount === 0 || undefined,
   });
 
   const trustUpgradeSuggestion =
@@ -476,8 +594,18 @@ export async function runOrchestrator(input: {
     ? "**Reliability:** Some numbers in the text below may not match the database — **use the result summary and table as the source of truth.**\n\n"
     : "";
 
+  const planLine =
+    typeof model.plan_summary === "string" && model.plan_summary.trim().length > 0
+      ? `**What this shows:** ${model.plan_summary.trim()}\n\n`
+      : "";
+
+  const emptyRowsNote =
+    exec.rowCount === 0
+      ? "**Note:** No rows matched. If you expected data, the filters may not match the Northwind sample (mostly 1996–1998) or category/region names may differ.\n\n"
+      : "";
+
   return {
-    assistant_message: `${executionFallbackNote}${reliabilityBanner}${trimmedNarrative}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
+    assistant_message: `${executionFallbackNote}${reliabilityBanner}${planLine}${emptyRowsNote}${trimmedNarrative}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
     kind: "answer",
     sql: usedValidation.normalizedSql,
     rows: exec.rows,
