@@ -1,6 +1,8 @@
 import { Parser } from "node-sql-parser";
+import type { Select } from "node-sql-parser";
 
 import { buildSqlWhitelist } from "@/lib/northwind/schema";
+import { joinFanoutTrustPenaltyFromAst } from "@/lib/datatalk/join-risk";
 
 const parser = new Parser();
 const { tables: TABLE_WHITELIST, columns: COLUMN_WHITELIST } = buildSqlWhitelist();
@@ -8,7 +10,7 @@ const { tables: TABLE_WHITELIST, columns: COLUMN_WHITELIST } = buildSqlWhitelist
 const BLOCKED = /\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|execute|call|pg_sleep|dblink|lo_import|set\s+role)\b/i;
 
 export type SqlValidationResult =
-  | { ok: true; normalizedSql: string }
+  | { ok: true; normalizedSql: string; joinFanoutTrustPenalty: boolean }
   | { ok: false; errors: string[] };
 
 export function validateSelectSql(rawSql: string): SqlValidationResult {
@@ -65,5 +67,6 @@ export function validateSelectSql(rawSql: string): SqlValidationResult {
     return { ok: false, errors };
   }
 
-  return { ok: true, normalizedSql: sql };
+  const joinFanoutTrustPenalty = joinFanoutTrustPenaltyFromAst(ast as Select, sql);
+  return { ok: true, normalizedSql: sql, joinFanoutTrustPenalty };
 }

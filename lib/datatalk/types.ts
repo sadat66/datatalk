@@ -2,8 +2,31 @@ import { z } from "zod";
 
 export const trustLevelSchema = z.enum(["low", "medium", "high"]);
 
+/** How this turn was produced — drives confidence copy (esp. non-data turns vs real failures). */
+export const trustPipelineSchema = z.enum([
+  "data",
+  "conversational",
+  "clarify",
+  "refused",
+  "validation_failed",
+  "execution_failed",
+  "canned",
+]);
+
+export type TrustPipeline = z.infer<typeof trustPipelineSchema>;
+
+export const trustReliabilitySchema = z.object({
+  /** 0–100 heuristic: higher = safer to rely on for decision-making */
+  confidenceScore: z.number().min(0).max(100),
+  narrativeNumericGrounding: z.enum(["ok", "suspect"]),
+  narrativeNotes: z.array(z.string()).optional(),
+});
+
+export type TrustReliability = z.infer<typeof trustReliabilitySchema>;
+
 export const trustReportSchema = z.object({
   level: trustLevelSchema,
+  pipeline: trustPipelineSchema.optional(),
   reasons: z.array(z.string()),
   validation: z.object({
     passed: z.boolean(),
@@ -15,6 +38,9 @@ export const trustReportSchema = z.object({
     ms: z.number(),
     skipped: z.boolean().optional(),
   }),
+  reliability: trustReliabilitySchema.optional(),
+  /** Actionable gaps vs a “high trust” bar for this turn */
+  gapsToHighTrust: z.array(z.string()).optional(),
 });
 
 export type TrustReport = z.infer<typeof trustReportSchema>;
@@ -52,6 +78,10 @@ export const assistantMessageContentSchema = z.object({
   plan_summary: z.string().optional(),
   metric_ids: z.array(z.string()).optional(),
   assumptions: z.array(z.string()).optional(),
+  /** Shown when trust is medium — user can confirm to re-run with strict verification */
+  trust_upgrade_suggestion: z.string().optional(),
+  result_has_more: z.boolean().optional(),
+  result_next_offset: z.number().nullable().optional(),
   error: z.string().optional(),
 });
 

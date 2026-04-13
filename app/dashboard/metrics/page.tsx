@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 export default function MetricsPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-y-auto p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Metric dictionary</h1>

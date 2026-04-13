@@ -4,17 +4,14 @@ import { Suspense } from "react";
 
 import { LoginForm } from "./login-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { createClient } from "@/lib/supabase/server";
+import { getAuthUser } from "@/lib/supabase/auth";
 
 type Props = {
   searchParams?: Promise<{ error?: string; next?: string }>;
 };
 
 export default async function LoginPage({ searchParams }: Props) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getAuthUser();
   if (user) {
     redirect("/dashboard");
   }
