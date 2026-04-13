@@ -1,9 +1,18 @@
-import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { SignupForm } from "./signup-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { createClient } from "@/lib/supabase/server";
 
-export default function SignupPage() {
+export default async function SignupPage() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (user) {
+    redirect("/dashboard");
+  }
+
   return (
     <Card className="w-full max-w-md border-border bg-card shadow-sm">
       <CardHeader className="space-y-1">
@@ -14,12 +23,6 @@ export default function SignupPage() {
       </CardHeader>
       <CardContent className="space-y-6">
         <SignupForm />
-        <p className="text-center text-sm text-muted-foreground">
-          Already have an account?{" "}
-          <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
-            Log in
-          </Link>
-        </p>
       </CardContent>
     </Card>
   );
