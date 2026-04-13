@@ -32,6 +32,8 @@ Copy `.env.example` to `.env.local` and set:
 | `OPENAI_API_KEY` | Alternative | If set **without** `OPENROUTER_API_KEY`, uses OpenAI-compatible `POST …/chat/completions` |
 | `OPENAI_BASE_URL` | No | Default `https://api.openai.com/v1`; set to e.g. Ollama `http://localhost:11434/v1` |
 | `OPENAI_MODEL` | No | Defaults to `gpt-4o-mini` when using OpenAI-compatible mode |
+| `HUGGINGFACE_API_KEY` | For voice input | Enables `/api/stt` speech-to-text using Hugging Face Inference |
+| `HUGGINGFACE_STT_MODEL` | No | Defaults to `openai/whisper-tiny` |
 
 ## Setup
 
@@ -41,6 +43,12 @@ Copy `.env.example` to `.env.local` and set:
 4. **Persisted chat** needs `conversations` and `messages` with RLS. Apply [supabase/migrations/001_app_tables.sql](supabase/migrations/001_app_tables.sql) either in the Supabase SQL editor or, with the project linked, `npm run supabase -- db query --linked -f supabase/migrations/001_app_tables.sql`. Next.js dev/build does not run this automatically. **This file alone does not create Northwind**—new projects still need step 5 or analytics queries will have nothing to run against.
 5. **Northwind (required for NL→SQL):** Ensure Northwind tables exist in the **same** Postgres database your app uses and match [lib/northwind/schema.ts](lib/northwind/schema.ts). Load your `northwind.sql` (or equivalent) in the SQL editor once per project. The schema this repo expects aligns with **pthom/northwind_psql** (notably the table is **`region`** singular, not `regions`, and includes **`us_states`** plus customer demo tables). To make clones reproducible without a manual step, you can add a **`000_northwind.sql`** migration (full dump) **before** `001` in `supabase/migrations/` and commit it—see [supabase/migrations/README.txt](supabase/migrations/README.txt).
 6. `npm run dev` → [http://localhost:3000](http://localhost:3000)
+
+### Voice input (Whisper Tiny STT)
+
+- Add `HUGGINGFACE_API_KEY` in `.env.local`.
+- Optional: set `HUGGINGFACE_STT_MODEL` (default is `openai/whisper-tiny`).
+- In chat, click **Voice**, speak, then click **Stop**. The transcript is appended to the text box.
 
 ## NL→SQL threat model (short)
 

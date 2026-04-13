@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2Icon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2Icon, MicIcon, SquareIcon, Volume2Icon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -44,6 +44,34 @@ type ChatResponse = {
   metric_ids?: string[];
   assumptions?: string[];
 };
+
+type ParsedSseEvent = {
+  event: string;
+  data: string;
+};
+
+type BrowserSpeechRecognition = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  maxAlternatives: number;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: unknown) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  onend: (() => void) | null;
+};
+
+type BrowserSpeechRecognitionCtor = new () => BrowserSpeechRecognition;
+
+function resolveBrowserSpeechCtor(): BrowserSpeechRecognitionCtor | null {
+  if (typeof window === "undefined") return null;
+  const w = window as Window & {
+    SpeechRecognition?: BrowserSpeechRecognitionCtor;
+    webkitSpeechRecognition?: BrowserSpeechRecognitionCtor;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
 
 function messageText(role: string, content: Record<string, unknown>): string {
   if (role === "user" && content.type === "user" && typeof content.text === "string") {
@@ -95,6 +123,32 @@ function formatCell(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+function parseSseEvents(buffer: string): { events: ParsedSseEvent[]; rest: string } {
+  const chunks = buffer.split("\n\n");
+  const rest = chunks.pop() ?? "";
+  const events: ParsedSseEvent[] = [];
+
+  for (const chunk of chunks) {
+    const lines = chunk.split("\n");
+    let event = "message";
+    const dataLines: string[] = [];
+
+    for (const rawLine of lines) {
+      const line = rawLine.trimEnd();
+      if (!line) continue;
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    events.push({ event, data: dataLines.join("\n") });
+  }
+
+  return { events, rest };
 }
 
 function TrustBlock({
@@ -161,7 +215,16 @@ export function ChatPanel() {
   const [loadingList, setLoadingList] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [browserSpeechSupported, setBrowserSpeechSupported] = useState(false);
+  const [ttsSupported, setTtsSupported] = useState(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const loadConversations = useCallback(async () => {
     setLoadingList(true);
@@ -204,34 +267,315 @@ export function ChatPanel() {
   }, [loadConversations]);
 
   useEffect(() => {
+    if (sending) return;
     if (conversationId) {
       void loadMessages(conversationId);
     } else {
       setMessages([]);
     }
-  }, [conversationId, loadMessages]);
+  }, [conversationId, loadMessages, sending]);
+
+  useEffect(() => {
+    setBrowserSpeechSupported(Boolean(resolveBrowserSpeechCtor()));
+    setTtsSupported(typeof window !== "undefined" && "speechSynthesis" in window);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      speechRecognitionRef.current?.stop();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  function toggleSpeak(messageId: string, text: string) {
+    if (!ttsSupported || typeof window === "undefined" || !text.trim()) return;
+    const synth = window.speechSynthesis;
+    if (speakingMessageId === messageId) {
+      synth.cancel();
+      setSpeakingMessageId(null);
+      return;
+    }
+
+    synth.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onend = () => setSpeakingMessageId(null);
+    utterance.onerror = () => {
+      setSpeakingMessageId(null);
+      setError("Text-to-speech failed in this browser.");
+    };
+    setSpeakingMessageId(messageId);
+    synth.speak(utterance);
+  }
+
+  async function transcribeAudio(audioBlob: Blob) {
+    setTranscribing(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("audio", audioBlob, "question.webm");
+      const res = await fetch("/api/stt", {
+        method: "POST",
+        body: formData,
+      });
+      const data = (await res.json()) as { text?: string; error?: string };
+      if (!res.ok || !data.text) {
+        throw new Error(data.error || "Transcription failed");
+      }
+      setDraft((prev) => {
+        const prefix = prev.trim();
+        return prefix ? `${prefix} ${data.text}` : data.text;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Transcription failed");
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  async function toggleRecording() {
+    if (transcribing || sending) return;
+
+    if (recording) {
+      speechRecognitionRef.current?.stop();
+      mediaRecorderRef.current?.stop();
+      setRecording(false);
+      return;
+    }
+
+    const SpeechCtor = resolveBrowserSpeechCtor();
+    if (SpeechCtor) {
+      try {
+        setError(null);
+        let transcript = "";
+        const recognition = new SpeechCtor();
+        speechRecognitionRef.current = recognition;
+        recognition.lang = "en-US";
+        recognition.interimResults = true;
+        recognition.continuous = false;
+        recognition.maxAlternatives = 1;
+        recognition.onresult = (event) => {
+          const ev = event as {
+            resultIndex?: number;
+            results?: ArrayLike<{ isFinal?: boolean; 0?: { transcript?: string } }>;
+          };
+          const results = ev.results;
+          if (!results) return;
+          for (let i = ev.resultIndex ?? 0; i < results.length; i += 1) {
+            const result = results[i];
+            if (result?.isFinal) {
+              transcript += `${result[0]?.transcript ?? ""} `;
+            }
+          }
+        };
+        recognition.onerror = (event) => {
+          const ev = event as { error?: string };
+          setError(`Browser speech failed: ${ev.error ?? "unknown error"}`);
+        };
+        recognition.onend = () => {
+          const text = transcript.trim();
+          speechRecognitionRef.current = null;
+          setRecording(false);
+          if (text) {
+            setDraft((prev) => {
+              const prefix = prev.trim();
+              return prefix ? `${prefix} ${text}` : text;
+            });
+          }
+        };
+        recognition.start();
+        setRecording(true);
+        return;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Browser speech start failed");
+      }
+    }
+
+    try {
+      setError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const mimeType = chunksRef.current[0]?.type || "audio/webm";
+        const audioBlob = new Blob(chunksRef.current, { type: mimeType });
+        chunksRef.current = [];
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        mediaRecorderRef.current = null;
+        if (audioBlob.size > 0) {
+          void transcribeAudio(audioBlob);
+        }
+      };
+
+      recorder.start();
+      setRecording(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Microphone access failed");
+    }
+  }
 
   async function sendMessage() {
     const text = draft.trim();
     if (!text || sending) return;
+    const now = new Date().toISOString();
+    const userTempId = `user-${Date.now()}`;
+    const assistantTempId = `assistant-${Date.now()}`;
+    const userConversationId = conversationId;
+    const userMessage: MessageRow = {
+      id: userTempId,
+      role: "user",
+      content: { type: "user", text },
+      created_at: now,
+    };
+    const assistantPlaceholder: MessageRow = {
+      id: assistantTempId,
+      role: "assistant",
+      content: { type: "assistant", text: "" },
+      created_at: now,
+    };
+
     setSending(true);
     setError(null);
+    setDraft("");
+    setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId, message: text }),
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({ conversationId: userConversationId, message: text }),
       });
-      const data = (await res.json()) as ChatResponse & { error?: string };
       if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error || res.statusText);
       }
-      setDraft("");
-      setConversationId(data.conversationId);
-      await loadConversations();
-      await loadMessages(data.conversationId);
+
+      let finalPayload: ChatResponse | null = null;
+      const contentType = res.headers.get("content-type") ?? "";
+
+      if (contentType.includes("text/event-stream") && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let receivedDelta = false;
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const parsed = parseSseEvents(buffer);
+          buffer = parsed.rest;
+
+          for (const evt of parsed.events) {
+            if (!evt.data) continue;
+            const payload = JSON.parse(evt.data) as Record<string, unknown>;
+
+            if (evt.event === "meta" && typeof payload.conversationId === "string") {
+              const nextConversationId = payload.conversationId;
+              setConversationId(nextConversationId);
+              setConversations((prev) => {
+                const exists = prev.some((c) => c.id === nextConversationId);
+                if (exists) return prev;
+                return [
+                  { id: nextConversationId, title: text.slice(0, 80), created_at: new Date().toISOString() },
+                  ...prev,
+                ];
+              });
+              continue;
+            }
+
+            if (evt.event === "assistant_delta" && typeof payload.delta === "string") {
+              receivedDelta = true;
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== assistantTempId) return m;
+                  const prior = messageText(m.role, m.content);
+                  return {
+                    ...m,
+                    content: { type: "assistant", text: `${prior}${payload.delta}` },
+                  };
+                }),
+              );
+              continue;
+            }
+
+            if (evt.event === "status" && !receivedDelta && typeof payload.stage === "string") {
+              const statusText =
+                payload.stage === "finalizing" ? "Finalizing answer..." : "Thinking...";
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantTempId
+                    ? {
+                        ...m,
+                        content: { type: "assistant", text: statusText },
+                      }
+                    : m,
+                ),
+              );
+              continue;
+            }
+
+            if (evt.event === "error") {
+              throw new Error(
+                typeof payload.error === "string" ? payload.error : "Failed to process chat request",
+              );
+            }
+
+            if (evt.event === "final") {
+              finalPayload = payload as unknown as ChatResponse;
+            }
+          }
+        }
+      } else {
+        finalPayload = (await res.json()) as ChatResponse;
+      }
+
+      if (!finalPayload) {
+        throw new Error("Streaming ended before a final response was received");
+      }
+
+      setConversationId(finalPayload.conversationId);
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== assistantTempId) return m;
+          return {
+            ...m,
+            content: {
+              type: "assistant",
+              text: finalPayload.assistant_message,
+              trust: finalPayload.trust,
+              sql: finalPayload.sql,
+              rows: finalPayload.rows,
+              plan_summary: finalPayload.plan_summary ?? undefined,
+              metric_ids: finalPayload.metric_ids,
+              assumptions: finalPayload.assumptions,
+            },
+          };
+        }),
+      );
     } catch (e) {
+      setMessages((prev) => prev.filter((m) => m.id !== userTempId && m.id !== assistantTempId));
       setError(e instanceof Error ? e.message : "Send failed");
+      setDraft(text);
     } finally {
       setSending(false);
     }
@@ -329,6 +673,28 @@ export function ChatPanel() {
                         }`}
                       >
                         <p className="whitespace-pre-wrap">{text}</p>
+                        {!isUser && ttsSupported ? (
+                          <div className="mt-1 flex justify-end">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => toggleSpeak(m.id, text)}
+                            >
+                              {speakingMessageId === m.id ? (
+                                <>
+                                  <SquareIcon className="size-4" />
+                                  Stop audio
+                                </>
+                              ) : (
+                                <>
+                                  <Volume2Icon className="size-4" />
+                                  Speak
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        ) : null}
                         {!isUser && trust ? (
                           <TrustBlock trust={trust} sql={sql} planSummary={plan} />
                         ) : null}
@@ -352,7 +718,7 @@ export function ChatPanel() {
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Ask in plain language…"
               rows={3}
-              disabled={sending}
+              disabled={sending || transcribing}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -361,7 +727,35 @@ export function ChatPanel() {
               }}
             />
             <div className="flex justify-end gap-2">
-              <Button type="button" onClick={() => void sendMessage()} disabled={sending}>
+              <Button
+                type="button"
+                variant={recording ? "destructive" : "outline"}
+                onClick={() => void toggleRecording()}
+                disabled={sending || transcribing}
+                title={
+                  browserSpeechSupported
+                    ? "Use browser speech recognition"
+                    : "Fallback to server speech-to-text"
+                }
+              >
+                {recording ? (
+                  <>
+                    <SquareIcon className="size-4" />
+                    Stop
+                  </>
+                ) : transcribing ? (
+                  <>
+                    <Loader2Icon className="size-4 animate-spin" />
+                    Transcribing
+                  </>
+                ) : (
+                  <>
+                    <MicIcon className="size-4" />
+                    Voice
+                  </>
+                )}
+              </Button>
+              <Button type="button" onClick={() => void sendMessage()} disabled={sending || transcribing}>
                 {sending ? (
                   <>
                     <Loader2Icon className="size-4 animate-spin" />
