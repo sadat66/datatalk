@@ -11,14 +11,11 @@ import { DataTalkLogo } from "@/components/datatalk-logo";
 import { MarketingDashboardPreview } from "@/components/marketing-dashboard-preview";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { createClient } from "@/lib/supabase/server";
+import { getAuthUser } from "@/lib/supabase/auth";
 import { cn } from "@/lib/utils";
 
 export default async function HomePage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getAuthUser();
 
   return (
     <div className="flex flex-1 flex-col">

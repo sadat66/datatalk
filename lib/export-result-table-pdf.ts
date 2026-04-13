@@ -1,6 +1,8 @@
 import { jsPDF } from "jspdf";
 import autoTable, { type CellDef } from "jspdf-autotable";
 
+import { QUERY_RESULT_EXPORT_MAX_ROWS } from "@/lib/datatalk/query-export-limits";
+
 const MARGIN = 48;
 const FOOTER_GAP = 32;
 /** Aligns with app accent (teal) for header bar */
@@ -9,7 +11,8 @@ const HEAD_TEXT: [number, number, number] = [255, 255, 255];
 const STRIPE: [number, number, number] = [248, 250, 252];
 const MUTED: [number, number, number] = [100, 116, 139];
 
-const MAX_ROWS = 500;
+/** Aligns with server export cap — extra guard if rows are passed from elsewhere. */
+const MAX_ROWS = QUERY_RESULT_EXPORT_MAX_ROWS;
 /** Per-cell cap before truncation (wrapped cells can still be large) */
 const MAX_CELL_CHARS = 2000;
 
@@ -96,7 +99,7 @@ export function downloadResultTablePdf(opts: {
       ? [
           [
             {
-              content: `… ${rows.length - limit} additional row${rows.length - limit === 1 ? "" : "s"} not included (export limit ${MAX_ROWS}).`,
+              content: `… ${rows.length - limit} additional row${rows.length - limit === 1 ? "" : "s"} not included (PDF row cap ${MAX_ROWS}).`,
               colSpan: cols.length,
               styles: { halign: "left", fillColor: [255, 251, 235] },
             },

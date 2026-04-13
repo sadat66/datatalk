@@ -157,7 +157,7 @@ function computeGapsToHighDataPath(input: DataPathInput, level: TrustReport["lev
 
   if (input.joinHeuristic) {
     gaps.push(
-      "Joins cost a trust point: narrow grain (one row per entity) or switch to SUM/COUNT subqueries to avoid fan-out.",
+      "Fan-out risk flagged by AST rules: simplify join paths, use scalar aggregates at line grain, or confirm strict verification.",
     );
   }
   if (input.emptyResultSet) {
@@ -237,7 +237,9 @@ function buildDataPathTrust(input: DataPathInput): TrustReport {
   }
   if (input.joinHeuristic) {
     score -= 1;
-    reasons.push("Query uses joins — review for fan-out / double counting.");
+    reasons.push(
+      "Structured join/aggregate check: possible fan-out (e.g. multiple joins, CROSS JOIN, GROUP BY with joins, or non-aggregate columns with a join).",
+    );
   }
   if (input.hadRepair) {
     score -= 1;

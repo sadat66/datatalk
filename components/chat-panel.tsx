@@ -266,6 +266,8 @@ const ChatMessageBubble = memo(
     onSpeak,
     onRequestStrictVerification,
     onNextPage,
+    onDownloadTablePdf,
+    pdfExportBusy,
   }: {
     message: MessageRow;
     isStreamingAssistant: boolean;
@@ -274,6 +276,8 @@ const ChatMessageBubble = memo(
     onSpeak: (messageId: string, text: string) => void;
     onRequestStrictVerification?: () => void;
     onNextPage?: (nextOffset: number) => void;
+    onDownloadTablePdf?: (sql: string, caption: string) => Promise<void>;
+    pdfExportBusy?: boolean;
   }) {
     const text = messageText(m.role, m.content);
     const trust = m.content.trust as TrustReport | undefined;
@@ -388,6 +392,7 @@ const ChatMessageBubble = memo(
           ) : null}
           {!isUser &&
           rows?.length &&
+          sql &&
           !isStreamingAssistant &&
           (trust == null || trust.execution?.skipped !== true) ? (
             <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
@@ -396,15 +401,14 @@ const ChatMessageBubble = memo(
                 variant="outline"
                 size="sm"
                 className="h-8 gap-1.5 text-xs"
-                onClick={() =>
-                  downloadResultTablePdf({
-                    rows,
-                    caption: text.trim().slice(0, 280),
-                  })
-                }
+                disabled={pdfExportBusy || !onDownloadTablePdf}
+                onClick={() => {
+                  if (!sql || !onDownloadTablePdf) return;
+                  void onDownloadTablePdf(sql, text.trim().slice(0, 280));
+                }}
               >
                 <FileDownIcon className="size-3.5" />
-                Download table (PDF)
+                {pdfExportBusy ? "Preparing PDF…" : "Download table (PDF)"}
               </Button>
             </div>
           ) : null}
@@ -419,7 +423,9 @@ const ChatMessageBubble = memo(
     prev.isSpeaking === next.isSpeaking &&
     prev.onSpeak === next.onSpeak &&
     prev.onRequestStrictVerification === next.onRequestStrictVerification &&
-    prev.onNextPage === next.onNextPage,
+    prev.onNextPage === next.onNextPage &&
+    prev.onDownloadTablePdf === next.onDownloadTablePdf &&
+    prev.pdfExportBusy === next.pdfExportBusy,
 );
 
 type ChatPanelProps = {
@@ -447,6 +453,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
+  const [pdfExportBusy, setPdfExportBusy] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -486,6 +493,47 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
     });
   }, []);
 
+  const handleDownloadTablePdf = useCallback(async (sql: string, caption: string) => {
+    setPdfExportBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/query-export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        rows?: Record<string, unknown>[];
+        truncated?: boolean;
+        exportMaxRows?: number;
+      };
+      if (!res.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "Export failed");
+      }
+      const rows = data.rows;
+      if (!Array.isArray(rows) || rows.length === 0) {
+        setError("No rows to export.");
+        return;
+      }
+      let capNote = "";
+      if (data.truncated) {
+        capNote =
+          typeof data.exportMaxRows === "number"
+            ? `\n\nExport limited to the first ${data.exportMaxRows.toLocaleString()} rows.`
+            : "\n\nExport was truncated.";
+      }
+      downloadResultTablePdf({
+        rows,
+        caption: `${caption.slice(0, 280)}${capNote}`,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "PDF export failed");
+    } finally {
+      setPdfExportBusy(false);
+    }
+  }, []);
+
   const scheduleStreamFlush = useCallback(() => {
     if (rafFlushScheduledRef.current) return;
     rafFlushScheduledRef.current = true;
@@ -503,62 +551,44 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
     });
   }, []);
 
-  const loadConversations = useCallback(async () => {
+  /** One GET: list only, or list + messages when `messagesFor` is set (single auth round-trip vs two fetches). */
+  const refreshConversationPanel = useCallback(async (messagesFor: string | null) => {
     setLoadingList(true);
+    setLoadingMessages(Boolean(messagesFor));
     setError(null);
     try {
-      const res = await fetch("/api/conversations");
+      const q = messagesFor ? `?messagesFor=${encodeURIComponent(messagesFor)}` : "";
+      const res = await fetch(`/api/conversations${q}`);
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || res.statusText);
+        const j = (await res.json().catch(() => ({}))) as { error?: unknown };
+        const msg = typeof j.error === "string" ? j.error : res.statusText || "Request failed";
+        throw new Error(msg);
       }
-      const data = (await res.json()) as { conversations: Conversation[] };
+      const data = (await res.json()) as {
+        conversations: Conversation[];
+        messages?: MessageRow[];
+      };
       setConversations(data.conversations ?? []);
+      if (messagesFor && Array.isArray(data.messages)) {
+        setMessages(data.messages);
+      } else if (!messagesFor) {
+        setMessages([]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load conversations");
     } finally {
       setLoadingList(false);
-    }
-  }, []);
-
-  const loadMessages = useCallback(async (id: string) => {
-    setLoadingMessages(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/conversations/${id}/messages`);
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || res.statusText);
-      }
-      const data = (await res.json()) as { messages: MessageRow[] };
-      setMessages(data.messages ?? []);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load messages");
-    } finally {
       setLoadingMessages(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadConversations();
-  }, [loadConversations]);
-
-  useEffect(() => {
-    if (!initialConversationId) return;
     isCreatingConversationRef.current = false;
-    setConversationId(initialConversationId);
-  }, [initialConversationId]);
-
-  useEffect(() => {
-    if (!conversationId) {
-      setMessages([]);
-      return;
+    if (initialConversationId) {
+      setConversationId(initialConversationId);
     }
-    if (isSendingRef.current && isCreatingConversationRef.current) {
-      return;
-    }
-    void loadMessages(conversationId);
-  }, [conversationId, loadMessages]);
+    void refreshConversationPanel(initialConversationId ?? null);
+  }, [initialConversationId, refreshConversationPanel]);
 
   useEffect(() => {
     setBrowserSpeechSupported(Boolean(resolveBrowserSpeechCtor()));
@@ -979,6 +1009,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
                   onClick={() => {
                     isCreatingConversationRef.current = false;
                     setConversationId(c.id);
+                    void refreshConversationPanel(c.id);
                   }}
                   className="min-w-0 flex-1 px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/80"
                 >
@@ -1115,6 +1146,8 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
                     onSpeak={toggleSpeak}
                     onRequestStrictVerification={handleStrictVerify}
                     onNextPage={handleNextPage}
+                    onDownloadTablePdf={handleDownloadTablePdf}
+                    pdfExportBusy={pdfExportBusy}
                   />
                 ))}
                 <div ref={messagesEndRef} className="h-px shrink-0" aria-hidden />

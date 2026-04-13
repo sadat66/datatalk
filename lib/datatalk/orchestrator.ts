@@ -16,6 +16,7 @@ import {
 } from "@/lib/datatalk/intent-verifier";
 import { llmPipelineSchema, type LlmPipelineResult, type TrustReport } from "@/lib/datatalk/types";
 import { buildTrustReport } from "@/lib/datatalk/trust";
+import { inferJoinFanoutTrustPenalty } from "@/lib/datatalk/join-risk";
 import { validateSelectSql, type SqlValidationResult } from "@/lib/datatalk/sql-validator";
 import { sqlContextFollowUp } from "@/lib/datatalk/conversation-nudges";
 import { critiqueNorthwindSql, isSqlCritiqueEnabled } from "@/lib/datatalk/sql-critique";
@@ -89,9 +90,11 @@ Allowlisted schema (tables and columns):
 ${buildSchemaPromptExcerpt()}
 `;
 
-function joinHeuristic(sql: string | null | undefined): boolean {
-  if (!sql) return false;
-  return /\bjoin\b/i.test(sql);
+/** Trust penalty for join fan-out / grain issues — prefers AST from validateSelectSql when available. */
+function joinFanoutPenalty(sql: string | null | undefined, validated?: SqlValidationResult): boolean {
+  if (!sql?.trim()) return false;
+  if (validated?.ok) return validated.joinFanoutTrustPenalty;
+  return inferJoinFanoutTrustPenalty(sql);
 }
 
 function parseLlmJson(raw: string): LlmPipelineResult {
@@ -164,7 +167,7 @@ async function runPaginationPage(input: {
       executionMs: 0,
       skippedExecution: true,
       hadRepair: false,
-      joinHeuristic: joinHeuristic(input.lastDataSql),
+      joinHeuristic: joinFanoutPenalty(input.lastDataSql),
     });
     return {
       assistant_message: "Could not re-run the previous query for pagination.",
@@ -191,7 +194,7 @@ async function runPaginationPage(input: {
       executionMs: 0,
       skippedExecution: true,
       hadRepair: false,
-      joinHeuristic: joinHeuristic(sql),
+      joinHeuristic: joinFanoutPenalty(sql, validation),
     });
     return {
       assistant_message: `Could not load the next rows: ${exec.error}`,
@@ -225,7 +228,7 @@ async function runPaginationPage(input: {
     executionMs: exec.ms,
     skippedExecution: false,
     hadRepair: false,
-    joinHeuristic: joinHeuristic(sql),
+    joinHeuristic: joinFanoutPenalty(sql, validation),
     narrativeGrounding,
     strictVerification: false,
   });
@@ -309,7 +312,7 @@ export async function runOrchestrator(input: {
 
   const sqlAfterLlm = sql;
   const runSqlCritique =
-    input.strictVerification || (isSqlCritiqueEnabled() && joinHeuristic(sql));
+    input.strictVerification || (isSqlCritiqueEnabled() && inferJoinFanoutTrustPenalty(sql));
   if (runSqlCritique) {
     try {
       const cr = await critiqueNorthwindSql({ userQuestion: input.message, sql });
@@ -344,7 +347,7 @@ export async function runOrchestrator(input: {
         executionMs: 0,
         skippedExecution: true,
         hadRepair,
-        joinHeuristic: joinHeuristic(sql),
+        joinHeuristic: joinFanoutPenalty(sql),
       });
       return {
         assistant_message: `I could not generate a safe query for that request. (${repairFailureMessage(err)})`,
@@ -364,7 +367,7 @@ export async function runOrchestrator(input: {
       executionMs: 0,
       skippedExecution: true,
       hadRepair,
-      joinHeuristic: joinHeuristic(sql),
+      joinHeuristic: joinFanoutPenalty(sql),
     });
     return {
       assistant_message:
@@ -396,7 +399,7 @@ export async function runOrchestrator(input: {
         executionMs: 0,
         skippedExecution: true,
         hadRepair,
-        joinHeuristic: joinHeuristic(validatedSql),
+        joinHeuristic: joinFanoutPenalty(validatedSql, validation),
       });
       return {
         assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${exRes.error}`,
@@ -516,7 +519,7 @@ export async function runOrchestrator(input: {
       executionMs: 0,
       skippedExecution: true,
       hadRepair,
-      joinHeuristic: joinHeuristic(sql),
+      joinHeuristic: joinFanoutPenalty(validation.normalizedSql, validation),
     });
     return {
       assistant_message: `The query could not be executed: ${primaryExecError || lastFallbackError || exec.error}`,
@@ -571,7 +574,7 @@ export async function runOrchestrator(input: {
     executionMs: exec.ms,
     skippedExecution: false,
     hadRepair,
-    joinHeuristic: joinHeuristic(sql),
+    joinHeuristic: joinFanoutPenalty(sql, usedValidation),
     narrativeGrounding,
     strictVerification: input.strictVerification === true,
     explainValidated: explainValidated || undefined,

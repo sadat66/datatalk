@@ -1,6 +1,9 @@
 -- Semantic layer: pre-joined views for safer NL→SQL (fewer join mistakes).
 
-create or replace view public.datatalk_order_details_extended as
+-- security_invoker: evaluate privileges/RLS as the querying user (PostgREST), not the view owner.
+create or replace view public.datatalk_order_details_extended
+with (security_invoker = true)
+as
 select
   od.order_id,
   od.product_id,
