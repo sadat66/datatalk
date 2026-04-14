@@ -37,9 +37,11 @@ Return a single JSON object only:
 
 export function getConfidenceRunThreshold(): number {
   const raw = process.env.DATATALK_CONFIDENCE_RUN_THRESHOLD?.trim();
-  if (!raw) return 85;
+  // 85 proved too strict for clear first-turn analytics prompts and caused unnecessary
+  // "intent test" holds. Keep strict mode configurable via env, but use a saner default.
+  if (!raw) return 75;
   const n = Number(raw);
-  if (!Number.isFinite(n)) return 85;
+  if (!Number.isFinite(n)) return 75;
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 

@@ -32,6 +32,19 @@ import {
 
 type Turn = { role: "user" | "assistant"; text: string };
 
+function isVeryShortReferentialFollowUp(message: string): boolean {
+  const trimmed = message.trim().toLowerCase();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > 6) return false;
+  return (
+    /\bwhat about (them|those|these|it|that)\b/i.test(trimmed) ||
+    /\bhow about (them|those|these|it|that)\b/i.test(trimmed) ||
+    /\b(and|also) (them|those|these|it|that)\b/i.test(trimmed) ||
+    /\b(same|again|as before)\b/i.test(trimmed)
+  );
+}
+
 function buildIntentVerificationQuestion(turns: Turn[], latestMessage: string): string {
   const trimmed = latestMessage.trim();
   if (!trimmed) return latestMessage;
@@ -301,6 +314,22 @@ export async function runOrchestrator(input: {
       kind: "answer",
       trust,
     };
+  }
+
+  if (isVeryShortReferentialFollowUp(input.message) && input.lastSuccessfulDataSql?.trim()) {
+    const previousValidation = validateSelectSql(input.lastSuccessfulDataSql.trim());
+    if (previousValidation.ok && previousValidation.normalizedSql === validation.normalizedSql) {
+      const trust = buildTrustReport({ pipeline: "clarify" });
+      return {
+        assistant_message:
+          "I can continue from the same customers, but this follow-up is ambiguous and would just repeat the same result. Which comparison do you want next: by order date trend, by product/category split, or by country/region?",
+        kind: "clarify",
+        trust,
+        plan_summary: model.plan_summary,
+        clarify_question:
+          "Choose one: order date trend, product/category split, or country/region comparison for these same customers.",
+      };
+    }
   }
 
   let validatedSql = validation.normalizedSql;

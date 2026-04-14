@@ -3,13 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  BotIcon,
   FileBarChartIcon,
   LayoutDashboardIcon,
+  MessageSquareIcon,
   SettingsIcon,
-  ShoppingCartIcon,
-  TruckIcon,
-  UsersIcon,
 } from "lucide-react";
 
 import { DataTalkLogo } from "@/components/datatalk-logo";
@@ -18,15 +15,11 @@ import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboardIcon, match: "exact" as const },
-  { href: "/dashboard", label: "Orders", icon: ShoppingCartIcon, match: "never" as const },
-  { href: "/dashboard", label: "Customers", icon: UsersIcon, match: "never" as const },
-  { href: "/dashboard", label: "Suppliers", icon: TruckIcon, match: "never" as const },
+  { href: "/dashboard/chat", label: "Chat", icon: MessageSquareIcon, match: "prefix" as const },
   { href: "/dashboard/metrics", label: "Metrics", icon: FileBarChartIcon, match: "prefix" as const },
-  { href: "/dashboard", label: "Agents", icon: BotIcon, match: "never" as const },
 ] as const;
 
 function isActive(pathname: string, href: string, match: (typeof nav)[number]["match"]) {
-  if (match === "never") return false;
   if (match === "exact") return pathname === href;
   return pathname === href || pathname.startsWith(`${href}/`);
 }
@@ -35,11 +28,11 @@ export function DashboardSidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="flex min-h-screen w-[240px] shrink-0 flex-col border-r border-white/10 bg-[var(--dt-navy)] text-white">
+    <aside className="flex h-full min-h-0 w-[220px] shrink-0 flex-col border-r border-white/10 bg-[var(--dt-navy)] text-white">
       <div className="flex h-14 items-center gap-2 border-b border-white/10 px-4">
         <DataTalkLogo variant="inverse" size="sm" />
       </div>
-      <nav className="flex flex-1 flex-col gap-0.5 p-3">
+      <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Main">
         {nav.map((item) => {
           const active = isActive(pathname, item.href, item.match);
           const Icon = item.icon;
@@ -52,10 +45,8 @@ export function DashboardSidebar() {
                 active
                   ? "bg-white/15 text-white"
                   : "text-white/70 hover:bg-white/10 hover:text-white",
-                item.match === "never" && "pointer-events-none opacity-45",
               )}
               aria-current={active ? "page" : undefined}
-              tabIndex={item.match === "never" ? -1 : undefined}
             >
               <Icon className="size-[18px] shrink-0 opacity-90" />
               {item.label}

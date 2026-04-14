@@ -57,7 +57,10 @@ export async function POST(request: Request) {
   }
 
   const wantsStream = request.headers.get("accept")?.includes("text/event-stream");
-  const { message, conversationId: rawConversationId, resultOffset, strictVerification } = parsed.data;
+  const { message, conversationId: rawConversationId, resultOffset } = parsed.data;
+  // Enforce strict verification on all chat runs so SQL-backed answers consistently
+  // receive the extra review pass without requiring an explicit user action.
+  const strictVerification = true;
   const incomingConversationId = rawConversationId ?? null;
 
   if (!wantsStream) {

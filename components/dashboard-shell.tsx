@@ -8,9 +8,9 @@ type DashboardShellProps = {
 
 export function DashboardShell({ email, children }: DashboardShellProps) {
   return (
-    <div className="flex min-h-screen bg-[var(--dt-surface)]">
+    <div className="flex h-dvh min-h-0 overflow-hidden bg-[var(--dt-surface)]">
       <DashboardSidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <DashboardHeader displayName={email} />
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</main>
       </div>

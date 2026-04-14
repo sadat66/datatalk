@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import Link from "next/link";
 import {
   ExternalLinkIcon,
@@ -13,6 +20,7 @@ import {
 import { ChatMessageBubble } from "@/components/chat/chat-message-bubble";
 import { parseSseEvents } from "@/components/chat/sse";
 import type { ChatResponse, Conversation, MessageRow } from "@/components/chat/types";
+import type { ConversationsPanelPayload } from "@/lib/conversations/panel-data";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -45,29 +53,60 @@ function resolveBrowserSpeechCtor(): BrowserSpeechRecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
+function subscribeNoop() {
+  return () => {};
+}
+
+function useBrowserSpeechSupported(): boolean {
+  return useSyncExternalStore(
+    subscribeNoop,
+    () => Boolean(resolveBrowserSpeechCtor()),
+    () => false,
+  );
+}
+
+function useTtsSupported(): boolean {
+  return useSyncExternalStore(
+    subscribeNoop,
+    () => typeof window !== "undefined" && "speechSynthesis" in window,
+    () => false,
+  );
+}
 
 type ChatPanelProps = {
   /** Right-rail layout for the dashboard (no left conversation column). */
   variant?: "default" | "embedded" | "page";
   /** When set, selects this thread on mount (e.g. `/dashboard/chat/[id]`). */
   initialConversationId?: string | null;
+  /** When provided (e.g. from SSR), skips the initial client fetch to `/api/conversations`. */
+  initialPanelData?: ConversationsPanelPayload;
 };
 
-export function ChatPanel({ variant = "default", initialConversationId = null }: ChatPanelProps) {
+export function ChatPanel({
+  variant = "default",
+  initialConversationId = null,
+  initialPanelData,
+}: ChatPanelProps) {
   const embedded = variant === "embedded";
   const pageVariant = variant === "page";
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<MessageRow[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>(
+    () => initialPanelData?.conversations ?? [],
+  );
+  const [conversationId, setConversationId] = useState<string | null>(() => initialConversationId ?? null);
+  const [messages, setMessages] = useState<MessageRow[]>(() => initialPanelData?.messages ?? []);
   const [draft, setDraft] = useState("");
-  const [loadingList, setLoadingList] = useState(true);
-  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingList, setLoadingList] = useState(() => initialPanelData === undefined);
+  const [loadingMessages, setLoadingMessages] = useState(() => {
+    if (initialPanelData === undefined) return true;
+    if (initialConversationId && initialPanelData.messages === undefined) return true;
+    return false;
+  });
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [browserSpeechSupported, setBrowserSpeechSupported] = useState(false);
-  const [ttsSupported, setTtsSupported] = useState(false);
+  const browserSpeechSupported = useBrowserSpeechSupported();
+  const ttsSupported = useTtsSupported();
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
@@ -201,17 +240,19 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
   }, []);
 
   useEffect(() => {
+    if (initialPanelData !== undefined) {
+      isCreatingConversationRef.current = false;
+      if (initialConversationId) {
+        setConversationId(initialConversationId);
+      }
+      return;
+    }
     isCreatingConversationRef.current = false;
     if (initialConversationId) {
       setConversationId(initialConversationId);
     }
     void refreshConversationPanel(initialConversationId ?? null);
-  }, [initialConversationId, refreshConversationPanel]);
-
-  useEffect(() => {
-    setBrowserSpeechSupported(Boolean(resolveBrowserSpeechCtor()));
-    setTtsSupported(typeof window !== "undefined" && "speechSynthesis" in window);
-  }, []);
+  }, [initialPanelData, initialConversationId, refreshConversationPanel]);
 
   useEffect(() => {
     return () => {
@@ -228,15 +269,12 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
     messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [loadingMessages, conversationId, messages.length]);
 
-  useEffect(() => {
-    speakingMessageIdRef.current = speakingMessageId;
-  }, [speakingMessageId]);
-
   const toggleSpeak = useCallback((messageId: string, text: string) => {
     if (!ttsSupported || typeof window === "undefined" || !text.trim()) return;
     const synth = window.speechSynthesis;
     if (speakingMessageIdRef.current === messageId) {
       synth.cancel();
+      speakingMessageIdRef.current = null;
       setSpeakingMessageId(null);
       return;
     }
@@ -245,11 +283,16 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1;
     utterance.pitch = 1;
-    utterance.onend = () => setSpeakingMessageId(null);
+    utterance.onend = () => {
+      speakingMessageIdRef.current = null;
+      setSpeakingMessageId(null);
+    };
     utterance.onerror = () => {
+      speakingMessageIdRef.current = null;
       setSpeakingMessageId(null);
       setError("Text-to-speech failed in this browser.");
     };
+    speakingMessageIdRef.current = messageId;
     setSpeakingMessageId(messageId);
     synth.speak(utterance);
   }, [ttsSupported]);
@@ -670,7 +713,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
       className={
         embedded
           ? "flex h-full min-h-0 flex-1 flex-col"
-          : "grid min-h-0 flex-1 gap-6 lg:grid-cols-[220px_1fr]"
+          : "grid min-h-0 flex-1 grid-rows-1 gap-6 lg:grid-cols-[220px_1fr]"
       }
     >
       {!embedded ? (
@@ -687,23 +730,21 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
         className={
           embedded
             ? "flex min-h-0 flex-1 flex-col rounded-none border-0 border-l border-border bg-card shadow-none"
-            : pageVariant
-              ? "flex min-h-[min(720px,calc(100vh-11rem))] flex-1 flex-col border-border"
-              : "flex min-h-[520px] flex-col border-border"
+            : "flex min-h-0 h-full min-w-0 flex-1 flex-col border-border"
         }
       >
         <CardHeader className={embedded ? "border-b border-border pb-3 pt-4" : "border-b border-border pb-4"}>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <CardTitle className={embedded ? "text-base" : "text-lg"}>
-                {embedded ? "DataTalk Agent" : pageVariant ? "Chat" : "Ask DataTalk"}
+                {embedded ? "DataTalk" : pageVariant ? "Conversation" : "DataTalk"}
               </CardTitle>
               <CardDescription className={embedded ? "text-xs" : ""}>
                 {embedded
-                  ? "Ask natural-language questions about your warehouse."
+                  ? "Natural language → validated SQL on the Northwind sample database."
                   : pageVariant
-                    ? "Full-page view of this conversation."
-                    : "Questions run through validation and a read-only database connection when configured."}
+                    ? "Same thread as in the workspace; use the full height for longer answers."
+                    : "Questions are validated and run against the read-only database when it is configured."}
               </CardDescription>
             </div>
             {!pageVariant && conversationId ? (
@@ -725,7 +766,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
           </div>
           {embedded ? (
             <div className="mt-3 space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">Your chats</p>
+              <p className="text-xs font-medium text-muted-foreground">Threads</p>
               {conversationList}
             </div>
           ) : null}
@@ -743,8 +784,8 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
           ) : null}
           <ScrollArea
             className={cn(
-              "min-h-[280px] flex-1 rounded-md border border-border bg-muted/20 p-3",
-              (embedded || pageVariant) && "min-h-0",
+              "min-h-[min(200px,28dvh)] flex-1 rounded-md border border-border bg-muted/20 p-3 sm:min-h-[min(260px,38dvh)]",
+              (embedded || pageVariant) && "min-h-0 sm:min-h-0",
             )}
           >
             {loadingMessages ? (
@@ -770,9 +811,10 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
                 ))}
                 <div ref={messagesEndRef} className="h-px shrink-0" aria-hidden />
                 {!messages.length ? (
-                  <p className="text-sm text-muted-foreground">
-                    Ask something like: “Top 5 customers by line revenue in 1997.” (Requires LLM and
-                    read-only DB env vars.)
+                  <p className="text-pretty text-sm text-muted-foreground">
+                    Try: “Top 5 customers by revenue in 1997” or “Which shippers had late orders last
+                    quarter?” Answers use the metrics catalog and your read-only connection when those
+                    services are configured.
                   </p>
                 ) : null}
               </div>
@@ -782,7 +824,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Ask in plain language…"
+              placeholder="Ask about orders, customers, revenue, or inventory…"
               rows={3}
               disabled={sending || transcribing}
               className="min-h-[88px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] shadow-none focus-visible:ring-0"

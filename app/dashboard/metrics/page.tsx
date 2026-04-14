@@ -15,7 +15,7 @@ export default function MetricsPage() {
   );
 
   return (
-    <div className="space-y-6 overflow-y-auto p-4 sm:p-6">
+    <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Metric dictionary</h1>
@@ -24,7 +24,7 @@ export default function MetricsPage() {
             when generating SQL.
           </p>
         </div>
-        <Link href="/dashboard" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+        <Link href="/dashboard/chat" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
           Back to chat
         </Link>
       </div>

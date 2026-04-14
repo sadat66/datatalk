@@ -1,13 +1,13 @@
 "use client";
 
-import { BellIcon, CalendarIcon, ChevronDownIcon } from "lucide-react";
+import Link from "next/link";
+import { MessageSquareIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 type DashboardHeaderProps = {
   displayName: string;
-  subtitle?: string;
 };
 
 function initialsFromEmail(email: string): string {
@@ -19,48 +19,49 @@ function initialsFromEmail(email: string): string {
   return local.slice(0, 2).toUpperCase() || "U";
 }
 
-export function DashboardHeader({ displayName, subtitle = "Analytics workspace" }: DashboardHeaderProps) {
+export function DashboardHeader({ displayName }: DashboardHeaderProps) {
   const initials = initialsFromEmail(displayName);
+  const shortName = displayName.includes("@")
+    ? displayName.split("@")[0]?.replace(/[._]/g, " ") ?? "User"
+    : displayName;
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-card px-4 sm:px-6">
-      <p className="hidden text-xs text-muted-foreground sm:block">{subtitle}</p>
-      <div className="ml-auto flex items-center gap-2 sm:gap-3">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="hidden h-8 gap-1.5 border-border bg-background font-normal text-muted-foreground sm:inline-flex"
+      <div className="flex min-w-0 items-center gap-3">
+        <Link
+          href="/dashboard"
+          className="shrink-0 rounded-lg text-base font-semibold tracking-tight text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <CalendarIcon className="size-3.5" />
-          Jan 1, 2026 – Mar 31, 2026
-          <ChevronDownIcon className="size-3.5 opacity-60" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="relative text-muted-foreground"
-          aria-label="Notifications"
+          DataTalk
+        </Link>
+        <div className="hidden min-w-0 sm:block">
+          <p className="truncate text-sm font-semibold text-foreground">Workspace</p>
+          <p className="truncate text-xs text-muted-foreground">Northwind analytics &amp; DataTalk chat</p>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+        <Link
+          href="/dashboard/chat"
+          className={cn(
+            buttonVariants({ variant: "outline", size: "sm" }),
+            "hidden h-8 gap-1.5 border-border bg-background font-normal text-muted-foreground md:inline-flex",
+          )}
         >
-          <BellIcon className="size-4" />
-          <span className="absolute right-1 top-1 flex size-4 items-center justify-center rounded-full bg-[var(--dt-alert)] text-[10px] font-semibold text-white">
-            3
-          </span>
-        </Button>
+          <MessageSquareIcon className="size-3.5" />
+          Open chat
+        </Link>
         <div className="flex items-center gap-2 border-l border-border pl-3">
           <span
             className={cn(
-              "flex size-9 items-center justify-center rounded-full text-xs font-semibold text-white shadow-sm",
+              "flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white shadow-sm",
               "bg-[var(--dt-teal)]",
             )}
+            aria-hidden
           >
             {initials}
           </span>
-          <span className="hidden max-w-[140px] truncate text-sm font-medium text-foreground lg:inline">
-            {displayName.includes("@")
-              ? displayName.split("@")[0]?.replace(/[._]/g, " ") ?? "User"
-              : displayName}
+          <span className="hidden max-w-[160px] truncate text-sm font-medium text-foreground lg:inline">
+            {shortName}
           </span>
         </div>
       </div>
