@@ -15,6 +15,8 @@ export const CHAT_RESULT_PAGE_SIZE = 15;
 
 const DEFAULT_MAX_ROWS = CHAT_RESULT_PAGE_SIZE;
 const DEFAULT_TIMEOUT_MS = 5000;
+const NOOP_ASYNC = async () => {};
+const readonlyClientCache = new Map<string, ReturnType<typeof postgres>>();
 
 /** Server-only: first configured read-capable Postgres URL (same resolution as execution). */
 export function getReadonlyDatabaseUrl(): string | null {
@@ -32,6 +34,37 @@ export function getReadonlyDatabaseUrl(): string | null {
 
 function getReadonlyUrl(): string | null {
   return getReadonlyDatabaseUrl();
+}
+
+function createReadonlyClient(url: string, timeoutMs: number): ReturnType<typeof postgres> {
+  return postgres(url, {
+    max: 1,
+    prepare: false,
+    connection: { statement_timeout: timeoutMs },
+  });
+}
+
+function acquireReadonlyClient(url: string, timeoutMs: number): {
+  sql: ReturnType<typeof postgres>;
+  release: () => Promise<void>;
+} {
+  if (timeoutMs === DEFAULT_TIMEOUT_MS) {
+    const cacheKey = `${url}::${timeoutMs}`;
+    const existing = readonlyClientCache.get(cacheKey);
+    if (existing) {
+      return { sql: existing, release: NOOP_ASYNC };
+    }
+    const sql = createReadonlyClient(url, timeoutMs);
+    readonlyClientCache.set(cacheKey, sql);
+    return { sql, release: NOOP_ASYNC };
+  }
+  const sql = createReadonlyClient(url, timeoutMs);
+  return {
+    sql,
+    release: async () => {
+      await sql.end({ timeout: 2 }).catch(() => undefined);
+    },
+  };
 }
 
 export async function executeReadonlySelect(
@@ -52,11 +85,7 @@ export async function executeReadonlySelect(
   const offset = Math.max(0, Math.floor(options?.offset ?? 0));
   const wrapped = `select * from (${validatedSql}) as datatalk_inner limit ${maxRows + 1} offset ${offset}`;
 
-  const sql = postgres(url, {
-    max: 1,
-    prepare: false,
-    connection: { statement_timeout: timeoutMs },
-  });
+  const { sql, release } = acquireReadonlyClient(url, timeoutMs);
 
   const started = performance.now();
   try {
@@ -75,7 +104,7 @@ export async function executeReadonlySelect(
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, error: msg };
   } finally {
-    await sql.end({ timeout: 2 }).catch(() => undefined);
+    await release();
   }
 }
 
@@ -99,12 +128,7 @@ export async function explainValidateReadonlySelect(validatedSql: string): Promi
   }
 
   const wrapped = `explain (costs off, verbose off) select * from (${validatedSql}) as datatalk_explain_inner limit 1`;
-
-  const sql = postgres(url, {
-    max: 1,
-    prepare: false,
-    connection: { statement_timeout: 5000 },
-  });
+  const { sql, release } = acquireReadonlyClient(url, DEFAULT_TIMEOUT_MS);
 
   try {
     await sql.unsafe(wrapped);
@@ -113,6 +137,6 @@ export async function explainValidateReadonlySelect(validatedSql: string): Promi
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, error: msg };
   } finally {
-    await sql.end({ timeout: 2 }).catch(() => undefined);
+    await release();
   }
 }

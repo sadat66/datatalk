@@ -1,4 +1,5 @@
 import { retrieveSchemaSnippets } from "@/lib/northwind/schema-retrieval";
+import { isReferentialFollowUpMessage } from "@/lib/datatalk/query-heuristics";
 
 type ChatTurn = { role: "user" | "assistant"; text: string };
 
@@ -47,15 +48,7 @@ export function buildConversationContext(
       "Discovery / meta question: kind=answer with sql null — briefly explain Northwind analytics scope and list several concrete example questions the user could ask next; do not refuse for being unspecific.",
     );
   }
-  const referentialFollowUp =
-    recent.length > 0 &&
-    (/\b(what|how) about (them|those|these|it|that)\b/i.test(lower) ||
-      /\b(and|also) (them|those|it)\b/i.test(lower) ||
-      /\b(them|those|these)\b/i.test(lower) ||
-      /\bsame (thing|for|as|query|breakdown|chart|list)\b/i.test(lower) ||
-      /\bthey\b/i.test(lower) ||
-      (wordCount <= 8 && /\bit\b/i.test(lower)) ||
-      /\bsame\b/i.test(lower));
+  const referentialFollowUp = recent.length > 0 && isReferentialFollowUpMessage(newUserMessage);
 
   if (referentialFollowUp) {
     hints.push(
