@@ -5,16 +5,20 @@ import { createClient } from "@/lib/supabase/server";
 import { runOrchestrator } from "@/lib/datatalk/orchestrator";
 import type { AssistantMessageContent } from "@/lib/datatalk/types";
 import {
+  buildMemoryHints,
+  parseConversationMemory,
+  updateConversationMemory,
+} from "@/lib/datatalk/conversation-memory";
+import {
   cannedFrustrationResponse,
   cannedGreetingResponse,
+  cannedVagueGuidanceResponse,
   classifyUserPrompt,
 } from "@/lib/datatalk/userPromptKeywords";
 
 const bodySchema = z.object({
   conversationId: z.string().uuid().optional().nullable(),
   message: z.string().min(1).max(8000),
-  /** Re-run with extra SQL review + trust boost when checks pass */
-  strictVerification: z.boolean().optional(),
   /** Next page of last query — 15 rows per page */
   resultOffset: z.number().int().min(0).optional(),
 });
@@ -122,7 +126,6 @@ async function runChatFlow({
   userId,
   message,
   incomingConversationId,
-  strictVerification,
   resultOffset,
   onProgress,
 }: {
@@ -130,7 +133,6 @@ async function runChatFlow({
   userId: string;
   message: string;
   incomingConversationId: string | null;
-  strictVerification?: boolean;
   resultOffset?: number;
   onProgress?: (event: string, payload: Record<string, unknown>) => void;
 }): Promise<ChatPayload> {
@@ -139,7 +141,7 @@ async function runChatFlow({
   if (conversationId) {
     const { data: conv, error: convError } = await supabase
       .from("conversations")
-      .select("id")
+      .select("id, memory_state")
       .eq("id", conversationId)
       .maybeSingle();
 
@@ -153,7 +155,7 @@ async function runChatFlow({
         user_id: userId,
         title: message.slice(0, 80),
       })
-      .select("id")
+      .select("id, memory_state")
       .single();
 
     if (createError || !conv) {
@@ -165,6 +167,16 @@ async function runChatFlow({
   if (!conversationId) {
     throw new RouteError("Internal: missing conversation", 500);
   }
+
+  const { data: convState, error: convStateError } = await supabase
+    .from("conversations")
+    .select("memory_state")
+    .eq("id", conversationId)
+    .single();
+  if (convStateError) {
+    throw new RouteError(convStateError.message, 500);
+  }
+  const conversationMemory = parseConversationMemory(convState?.memory_state);
 
   onProgress?.("meta", { conversationId });
 
@@ -218,13 +230,16 @@ async function runChatFlow({
       result = cannedGreetingResponse("thanks");
     } else if (classification.skipLlm && classification.canned === "frustration") {
       result = cannedFrustrationResponse();
+    } else if (classification.skipLlm && classification.canned === "vague_guidance") {
+      result = cannedVagueGuidanceResponse();
     } else {
+      const memoryHints = buildMemoryHints(conversationMemory, message);
       result = await runOrchestrator({
         turns,
         message,
-        toneHints: classification.toneHints,
-        strictVerification: strictVerification === true,
-        lastSuccessfulDataSql: strictVerification === true ? lastDataSql : undefined,
+        toneHints: [...(classification.toneHints ?? []), ...memoryHints],
+        strictVerification: true,
+        lastSuccessfulDataSql: lastDataSql,
       });
     }
   } catch (e) {
@@ -244,6 +259,24 @@ async function runChatFlow({
 
   if (asstMsgError) {
     throw new RouteError(asstMsgError.message, 500);
+  }
+
+  const updatedMemory = updateConversationMemory({
+    previous: conversationMemory,
+    userMessage: message,
+    result,
+  });
+  const { error: memoryUpdateError } = await supabase
+    .from("conversations")
+    .update({
+      memory_state: updatedMemory as unknown as Record<string, unknown>,
+      memory_updated_at: new Date().toISOString(),
+    })
+    .eq("id", conversationId)
+    .eq("user_id", userId);
+  if (memoryUpdateError) {
+    // Non-fatal: answer is already persisted and returned; memory is advisory.
+    console.warn("conversation memory update failed", memoryUpdateError.message);
   }
 
   return buildPayload(conversationId, result);
@@ -272,7 +305,7 @@ export async function POST(request: Request) {
   }
 
   const wantsStream = request.headers.get("accept")?.includes("text/event-stream");
-  const { message, conversationId: rawConversationId, strictVerification, resultOffset } = parsed.data;
+  const { message, conversationId: rawConversationId, resultOffset } = parsed.data;
   const incomingConversationId = rawConversationId ?? null;
 
   if (!wantsStream) {
@@ -282,7 +315,6 @@ export async function POST(request: Request) {
         userId: user.id,
         message,
         incomingConversationId,
-        strictVerification,
         resultOffset,
       });
       return NextResponse.json(payload);
@@ -308,7 +340,6 @@ export async function POST(request: Request) {
             userId: user.id,
             message,
             incomingConversationId,
-            strictVerification,
             resultOffset,
             onProgress: emit,
           });

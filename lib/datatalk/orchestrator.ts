@@ -49,6 +49,7 @@ Rules:
 - kind=refuse for destructive requests, non-business questions, or anything outside Northwind sales data — not because the question touches "databases" or "SQL" (those are the core product).
 - kind=answer when you either (a) answer with one safe SELECT using allowlisted tables, or (b) answer a meta / discovery question without needing data (see below) — in case (b) set sql to null.
 - sql must not contain a semicolon. No DML/DDL. Prefer explicit column lists over SELECT * when reasonable.
+- If the user asks for a specific top-N or rank range (for example "top 5", "rank 1 to 5"), include LIMIT N in SQL and preserve that cap in follow-ups.
 - Use lowercase identifiers matching the schema. Dates in Northwind are mostly in the 1990s sample data.
 - When using metrics, set metric_ids to the ids you relied on.
 - If the user message includes "Focus for this turn" with join recipes, prefer those join paths over inventing new keys (especially ship_* vs territories).
@@ -58,13 +59,27 @@ Ranking and words like "best" / "top" / "winner":
 - If they just saw a ranked or tabular answer and ask who is the best / which is #1 / who wins, reuse the same grain, filters, and metric; return the top row (SQL pattern: ORDER BY that metric DESC, NULLS LAST, LIMIT 1) or a small top-N — do not refuse as subjective criteria.
 - In the assistant_message JSON field, state the rule in one short phrase (e.g. Treating best as highest revenue in this list.). Add the same to assumptions when helpful.
 
+Tie-handling for extrema (highest / lowest / min / max):
+- Unless the user explicitly asks for one row ("top 1", "single", "#1", "just one"), include all tied rows at the extreme value.
+- Avoid LIMIT 1 for extrema when ties are likely; prefer tie-aware filtering (for example compare against a min/max subquery or CTE).
+- If you intentionally return one row for an extrema question, say in assumptions that ties may exist and this is one representative row.
+
+Discount-comparative phrasing ("least discount", "lowest discount", "most discounted"):
+- "Least/lowest discount" means minimum discount value in the requested scope.
+- If combined with a ranking objective (for example "products sold the most ... with least discount"), use two-step logic: first identify the minimum-discount cohort in-scope, then rank that cohort by the sales metric.
+- Prefer CTEs/subqueries that aggregate cleanly over correlated subqueries that reference outer columns not in GROUP BY.
+- When aggregating by product, group by stable keys (\`product_id\` plus \`product_name\`) to avoid brittle SQL.
+- If the user pasted SQL and also gave a natural-language request, prioritize the natural-language intent and return clean SQL; do not copy malformed fragments.
+
 Vague or underspecified prompts:
 - If the user omits a time range, geography, or segment, default to the full Northwind sample for that dimension (e.g. all order dates, all regions) when one clear SELECT still follows; list those defaults in assumptions.
 - If only one natural interpretation exists (e.g. "total orders" without filters), answer with kind=answer and state defaults in assumptions — do not over-clarify.
+- Prefer answering with sensible defaults over clarifying when a safe SQL is still clear enough; then include assumptions and a short trust-improvement nudge naming the most useful missing specs (typically time window, dimension, and filters).
 - Phrases like "regional breakdown", "orders by region", "order count by region" already specify the dimension (region). Use kind=answer with SQL: default to sales region path orders → employees → employee_territories → territories → region, unless they clearly mean ship-to geography (then use orders.ship_region or ship_country). Never ask whether they meant region versus "another dimension" — that is unhelpful over-clarification.
 - If several interpretations are equally likely (e.g. "sales" could mean revenue, units, or order count by product vs by customer), use kind=clarify with one question that names the fork (pick one).
 - For follow-ups like "what about X", "same for Y", "and the suppliers?", inherit tables, filters, and time window from the last assistant answer unless the user overrides.
-- Referential follow-ups ("what about them", "how about those", "and them?", "same thing for…", "they" / "it" pointing back): resolve who or what the user means from the prior user + assistant turns — usually the entities or dimension just discussed. In assistant_message, state that link in one short phrase (e.g. Here for the same top customers we ranked by revenue.) so the answer is explicit. Prefer kind=answer with SQL that adds insight for those referents: a breakdown, comparison, trend slice, or next-level drill-down — not a vague restatement. Use kind=clarify only when several prior referents are equally plausible.
+- Referential follow-ups ("what about them", "how about those", "and them?", "same thing for…", "they" / "it" pointing back): resolve who or what the user means from the prior user + assistant turns — usually the entities or dimension just discussed. In assistant_message, state that link in one short phrase (e.g. Here for the same top customers we ranked by revenue.) so the answer is explicit. Prefer kind=answer with SQL that adds insight for those referents: a breakdown, comparison, trend slice, or next-level drill-down — not a vague restatement.
+- If there is no concrete prior user referent (e.g. conversation starts with greeting/small talk, then "what about them"), do not guess from generic examples in assistant text; use kind=clarify and ask who/which entity they mean.
 - Relative dates ("this year", "last quarter") do not match the 1990s sample literally — either clarify that the dataset is historical demo data or answer on full sample and say so in assumptions.
 
 Meta and discovery questions (what can you do, what insights are available, how does this work):
@@ -129,8 +144,160 @@ async function repairSql(context: string, previousSql: string, errors: string[])
   return parsed.sql;
 }
 
+async function repairSqlForIntent(input: {
+  context: string;
+  previousSql: string;
+  userMessage: string;
+  confidence: number;
+  mismatches: string[];
+  clarifySuggestion?: string | null;
+}): Promise<string> {
+  const mismatchLines = input.mismatches.length
+    ? `\nMismatches:\n- ${input.mismatches.join("\n- ")}`
+    : "\nMismatches:\n- None provided";
+  const clarifyLine = input.clarifySuggestion?.trim()
+    ? `\nClarify suggestion from verifier:\n${input.clarifySuggestion.trim()}`
+    : "";
+
+  const raw = await chatCompletionJson([
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: `${input.context}
+
+The previous SQL may not match the user intent closely enough.
+User question:
+${input.userMessage}
+
+Current SQL:
+${input.previousSql}
+
+Intent-verifier confidence: ${input.confidence}/100.${mismatchLines}${clarifyLine}
+
+Return a NEW full JSON object with kind=answer and corrected sql that better matches the user request. Do not ask the user to clarify if a reasonable SQL interpretation can be executed safely.`,
+    },
+  ]);
+  const parsed = parseLlmJson(raw);
+  if (parsed.kind !== "answer" || !parsed.sql) {
+    throw new Error(parsed.assistant_message || "Could not repair intent alignment.");
+  }
+  return parsed.sql;
+}
+
+async function repairSqlForExplain(input: {
+  context: string;
+  previousSql: string;
+  userMessage: string;
+  explainError: string;
+}): Promise<string> {
+  const raw = await chatCompletionJson([
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: `${input.context}
+
+The previous SQL passed static allowlist checks but failed database EXPLAIN dry-run.
+User question:
+${input.userMessage}
+
+Current SQL:
+${input.previousSql}
+
+EXPLAIN error:
+${input.explainError}
+
+Return a NEW full JSON object with kind=answer and corrected sql that preserves the user intent.
+Pay extra attention to aggregate correctness (GROUP BY vs non-aggregated selected columns), join keys, and date filters.
+Do not return partial SQL fragments.`,
+    },
+  ]);
+  const parsed = parseLlmJson(raw);
+  if (parsed.kind !== "answer" || !parsed.sql) {
+    throw new Error(parsed.assistant_message || "Could not repair SQL after EXPLAIN failure.");
+  }
+  return parsed.sql;
+}
+
 function repairFailureMessage(err: unknown): string {
   return err instanceof Error ? err.message : "Could not repair SQL.";
+}
+
+function isReferentialFollowUpMessage(message: string): boolean {
+  const trimmed = message.trim().toLowerCase();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  const hasPronoun = /\b(them|those|that|it|same|these)\b/i.test(trimmed);
+  const hasCarryForwardCue = /\b(same|again|as before|based on|for those|for them)\b/i.test(trimmed);
+  return words.length <= 14 && (hasPronoun || hasCarryForwardCue);
+}
+
+function isOverallAggregateRequest(message: string): boolean {
+  return /\b(sum|total)\s+(?:of\s+)?all\b/i.test(message) || /\b(overall|grand total|across all)\b/i.test(message);
+}
+
+function isUnderspecifiedMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  const words = message.trim().split(/\s+/).filter(Boolean);
+  const hasTimeWindow =
+    /\b(19\d{2}|all years?|all sample years?|between|from|since|last year|this year|last quarter|last month|ytd)\b/i.test(
+      lower,
+    );
+  const hasBreakdown =
+    /\b(by|per|group by|category|customer|product|supplier|region|territor|shipper|month|quarter|year)\b/i.test(lower);
+  const hasMetric = /\b(revenue|sales|orders?|count|units?|freight|inventory|stock|avg|average)\b/i.test(lower);
+  const wantsOverall = isOverallAggregateRequest(message);
+  if (words.length <= 4 && hasMetric) return true;
+  if (hasMetric && wantsOverall) return !hasTimeWindow;
+  return hasMetric && (!hasTimeWindow || !hasBreakdown);
+}
+
+function buildTrustSpecNudge(message: string): string {
+  if (isReferentialFollowUpMessage(message)) return "";
+  if (!isUnderspecifiedMessage(message)) return "";
+  const lower = message.toLowerCase();
+  const wantsOverall = isOverallAggregateRequest(message);
+  const suggestions: string[] = [];
+  if (!/\b(19\d{2}|all years?|all sample years?|between|from|since|last year|this year|last quarter|last month|ytd)\b/i.test(lower)) {
+    suggestions.push("time window (for example 1997, 1998, or all sample years)");
+  }
+  if (
+    !wantsOverall &&
+    !/\b(by|per|group by|category|customer|product|supplier|region|territor|shipper|month|quarter|year)\b/i.test(lower)
+  ) {
+    suggestions.push("breakdown dimension (for example by category, customer, product, or region)");
+  }
+  if (!/\b(where|for|in|country|city|shipper|employee|top\s+\d+)\b/i.test(lower)) {
+    suggestions.push("filter scope (for example top 10, one country, or one shipper)");
+  }
+  const narrowed = suggestions.slice(0, 3);
+  if (!narrowed.length) return "";
+  return `\n\n**For higher-trust results, please specify:** ${narrowed.join("; ")}.`;
+}
+
+function extractRequestedTopN(message: string): number | null {
+  const m = message.toLowerCase();
+  const patterns = [
+    /\btop\s+(\d{1,3})\b/i,
+    /\bfirst\s+(\d{1,3})\b/i,
+    /\brank(?:ed|ing)?(?:\s+\w+){0,6}\s+1\s*(?:to|-)\s*(\d{1,3})\b/i,
+    /\b(?:show|list|return|give)\s+(?:me\s+)?(\d{1,3})\s+(?:rows|items|products|customers|orders)\b/i,
+  ];
+  for (const re of patterns) {
+    const match = m.match(re);
+    const parsed = match?.[1] ? Number.parseInt(match[1], 10) : Number.NaN;
+    if (Number.isFinite(parsed) && parsed >= 1 && parsed <= CHAT_RESULT_PAGE_SIZE) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function enforceRequestedTopN(sql: string, message: string): string {
+  const requestedTopN = extractRequestedTopN(message);
+  if (!requestedTopN) return sql;
+  if (!/\border\s+by\b/i.test(sql)) return sql;
+  if (/\blimit\s+\d+\b/i.test(sql)) return sql;
+  return `${sql}\nLIMIT ${requestedTopN}`;
 }
 
 export type OrchestratorResult = {
@@ -328,12 +495,14 @@ export async function runOrchestrator(input: {
     }
   }
   const critiqueReplacedSql = sql !== sqlAfterLlm;
+  sql = enforceRequestedTopN(sql, input.message);
 
   let validation = validateSelectSql(sql);
   let failedValidationErrors = !validation.ok ? [...validation.errors] : [];
   if (!validation.ok) {
     try {
       sql = await repairSql(context, sql, validation.errors);
+      sql = enforceRequestedTopN(sql, input.message);
       hadRepair = true;
       validation = validateSelectSql(sql);
       failedValidationErrors = !validation.ok ? [...validation.errors] : failedValidationErrors;
@@ -377,7 +546,7 @@ export async function runOrchestrator(input: {
     };
   }
 
-  const validatedSql = validation.normalizedSql;
+  let validatedSql = validation.normalizedSql;
   let explainValidated = false;
   let intentVerifierRan = false;
   let intentVerifierError = false;
@@ -385,31 +554,77 @@ export async function runOrchestrator(input: {
   let intentAligned: boolean | undefined;
 
   if (isExplainValidateEnabled()) {
-    const exRes = await explainValidateReadonlySelect(validatedSql);
+    let exRes = await explainValidateReadonlySelect(validatedSql);
     if (!exRes.ok) {
-      const trust = buildTrustReport({
-        pipeline: "execution_failed",
-        validationPassed: true,
-        validationDetails: [
-          "Parsed SQL and allowlist checks passed.",
-          `EXPLAIN dry-run failed: ${exRes.error}`,
-        ],
-        rowCount: 0,
-        limited: false,
-        executionMs: 0,
-        skippedExecution: true,
-        hadRepair,
-        joinHeuristic: joinFanoutPenalty(validatedSql, validation),
-      });
-      return {
-        assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${exRes.error}`,
-        kind: "answer",
-        sql: validatedSql,
-        trust,
-        plan_summary: model.plan_summary,
-        metric_ids: model.metric_ids,
-        assumptions: model.assumptions,
-      };
+      const firstExplainError = exRes.error;
+      try {
+        const repairedSql = await repairSqlForExplain({
+          context,
+          previousSql: validatedSql,
+          userMessage: input.message,
+          explainError: firstExplainError,
+        });
+        const repairedValidation = validateSelectSql(enforceRequestedTopN(repairedSql, input.message));
+        if (!repairedValidation.ok) {
+          throw new Error(repairedValidation.errors.join("; "));
+        }
+        validatedSql = repairedValidation.normalizedSql;
+        validation = repairedValidation;
+        sql = validatedSql;
+        hadRepair = true;
+        exRes = await explainValidateReadonlySelect(validatedSql);
+      } catch (err) {
+        const trust = buildTrustReport({
+          pipeline: "execution_failed",
+          validationPassed: true,
+          validationDetails: [
+            "Parsed SQL and allowlist checks passed.",
+            `EXPLAIN dry-run failed: ${firstExplainError}`,
+            `Automatic repair failed: ${repairFailureMessage(err)}`,
+          ],
+          rowCount: 0,
+          limited: false,
+          executionMs: 0,
+          skippedExecution: true,
+          hadRepair,
+          joinHeuristic: joinFanoutPenalty(validatedSql, validation),
+        });
+        return {
+          assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${firstExplainError}`,
+          kind: "answer",
+          sql: validatedSql,
+          trust,
+          plan_summary: model.plan_summary,
+          metric_ids: model.metric_ids,
+          assumptions: model.assumptions,
+        };
+      }
+      if (!exRes.ok) {
+        const trust = buildTrustReport({
+          pipeline: "execution_failed",
+          validationPassed: true,
+          validationDetails: [
+            "Parsed SQL and allowlist checks passed.",
+            `EXPLAIN dry-run failed: ${exRes.error}`,
+            "Automatic repair retried once but EXPLAIN still failed.",
+          ],
+          rowCount: 0,
+          limited: false,
+          executionMs: 0,
+          skippedExecution: true,
+          hadRepair,
+          joinHeuristic: joinFanoutPenalty(validatedSql, validation),
+        });
+        return {
+          assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${exRes.error}`,
+          kind: "answer",
+          sql: validatedSql,
+          trust,
+          plan_summary: model.plan_summary,
+          metric_ids: model.metric_ids,
+          assumptions: model.assumptions,
+        };
+      }
     }
     explainValidated = true;
   }
@@ -429,6 +644,51 @@ export async function runOrchestrator(input: {
         const threshold = getConfidenceRunThreshold();
         const shouldHold = iv.confidence_0_100 < threshold || iv.aligned === false;
         if (shouldHold) {
+          let recovered = false;
+          if (iv.mismatches.length > 0 || (iv.clarify_suggestion?.trim().length ?? 0) > 0) {
+            try {
+              const repairedSql = await repairSqlForIntent({
+                context,
+                previousSql: validatedSql,
+                userMessage: input.message,
+                confidence: iv.confidence_0_100,
+                mismatches: iv.mismatches,
+                clarifySuggestion: iv.clarify_suggestion,
+              });
+              const repairedValidation = validateSelectSql(enforceRequestedTopN(repairedSql, input.message));
+              if (repairedValidation.ok) {
+                if (isExplainValidateEnabled()) {
+                  const exRes = await explainValidateReadonlySelect(repairedValidation.normalizedSql);
+                  if (!exRes.ok) {
+                    throw new Error(exRes.error);
+                  }
+                  explainValidated = true;
+                }
+                const repairedIv = await verifySqlAgainstIntent({
+                  userQuestion: input.message,
+                  sql: repairedValidation.normalizedSql,
+                });
+                if (
+                  repairedIv &&
+                  repairedIv.aligned !== false &&
+                  repairedIv.confidence_0_100 >= threshold
+                ) {
+                  validation = repairedValidation;
+                  sql = repairedValidation.normalizedSql;
+                  hadRepair = true;
+                  intentConfidence = repairedIv.confidence_0_100;
+                  intentAligned = repairedIv.aligned;
+                  recovered = true;
+                }
+              }
+            } catch {
+              /* fallback to clarify below */
+            }
+          }
+
+          if (recovered) {
+            // Continue to normal execution with the repaired SQL.
+          } else {
           const clarifyQ =
             iv.clarify_suggestion?.trim() ||
             `Which interpretation should we use? (Verification confidence ${iv.confidence_0_100}% is below the ${threshold}% run threshold.)`;
@@ -449,6 +709,7 @@ export async function runOrchestrator(input: {
             plan_summary: model.plan_summary,
             clarify_question: clarifyQ,
           };
+          }
         }
       }
     } catch {
@@ -585,14 +846,6 @@ export async function runOrchestrator(input: {
     emptyResultSet: exec.rowCount === 0 || undefined,
   });
 
-  const trustUpgradeSuggestion =
-    trust.level === "medium" &&
-    trust.pipeline === "data" &&
-    !input.strictVerification &&
-    narrativeGrounding.ok !== false
-      ? "Confidence is medium (e.g. joins, limits, or repairs). If you want a high-confidence pass, confirm below — we will re-run with strict verification (extra SQL review). When checks pass, trust can reach high."
-      : undefined;
-
   const reliabilityBanner = !narrativeGrounding.ok
     ? "**Reliability:** Some numbers in the text below may not match the database — **use the result summary and table as the source of truth.**\n\n"
     : "";
@@ -606,9 +859,10 @@ export async function runOrchestrator(input: {
     exec.rowCount === 0
       ? "**Note:** No rows matched. If you expected data, the filters may not match the Northwind sample (mostly 1996–1998) or category/region names may differ.\n\n"
       : "";
+  const trustSpecNudge = buildTrustSpecNudge(input.message);
 
   return {
-    assistant_message: `${executionFallbackNote}${reliabilityBanner}${planLine}${emptyRowsNote}${trimmedNarrative}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
+    assistant_message: `${executionFallbackNote}${reliabilityBanner}${planLine}${emptyRowsNote}${trimmedNarrative}${trustSpecNudge}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
     kind: "answer",
     sql: usedValidation.normalizedSql,
     rows: exec.rows,
@@ -616,7 +870,7 @@ export async function runOrchestrator(input: {
     plan_summary: model.plan_summary,
     metric_ids: model.metric_ids,
     assumptions: model.assumptions,
-    trustUpgradeSuggestion,
+    trustUpgradeSuggestion: undefined,
     resultHasMore: hasMore,
     resultNextOffset,
   };

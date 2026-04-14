@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatUsd, type DashboardDataset } from "@/lib/northwind/dashboard-data";
+import { NORTHWIND_METRICS } from "@/lib/northwind/metrics";
 
 function SparkLine({ values, className }: { values: number[]; className?: string }) {
   const w = 80;
@@ -134,44 +135,6 @@ function RevenueChart({
   );
 }
 
-function ProductsChart({ rows }: { rows: { productName: string; units: number }[] }) {
-  const max = Math.max(...rows.map((r) => r.units), 1);
-  const labelW = 108;
-  const barH = 14;
-  const gap = 10;
-  const chartW = 320;
-  const chartH = Math.max(8 + rows.length * (barH + gap), 40);
-
-  return (
-    <svg
-      viewBox={`0 0 ${chartW} ${chartH}`}
-      className="h-auto w-full max-w-full"
-      role="img"
-      aria-label="Top products by volume"
-    >
-      {rows.map((r, i) => {
-        const y = 8 + i * (barH + gap);
-        const bw = (r.units / max) * (chartW - labelW - 40);
-        return (
-          <g key={r.productName}>
-            <text x={0} y={y + barH - 2} className="fill-muted-foreground text-[10px]">
-              {r.productName.length > 18 ? `${r.productName.slice(0, 16)}…` : r.productName}
-            </text>
-            <rect x={labelW} y={y} width={bw} height={barH} rx="4" className="fill-[var(--dt-teal)]/85" />
-            <text
-              x={labelW + bw + 6}
-              y={y + barH - 2}
-              className="fill-muted-foreground text-[10px] tabular-nums"
-            >
-              {r.units.toLocaleString()}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
 function deltaLabel(pct: number | null, compareYear: number): { text: string; positive: boolean } {
   if (pct === null) {
     return { text: `No prior-year data (${compareYear})`, positive: true };
@@ -196,8 +159,8 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
     );
   }
 
-  const { focusYear, compareYear, kpis, revenueByMonth, topProducts, lateOrders, unfinishedOrders, anomalyCount } =
-    data;
+  const { focusYear, compareYear, kpis, revenueByMonth, lateOrders, unfinishedOrders, anomalyCount } = data;
+  const metricPreview = NORTHWIND_METRICS.slice(0, 6);
 
   const kpiCards = [
     {
@@ -302,15 +265,23 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
         </Card>
         <Card className="border-border/80 shadow-sm">
           <CardHeader>
-            <CardTitle className="text-base">Top products by volume</CardTitle>
-            <CardDescription>Units sold in {focusYear}</CardDescription>
+            <CardTitle className="text-base">Metrics dictionary</CardTitle>
+            <CardDescription>Shared metric definitions for trusted NL-to-SQL answers</CardDescription>
           </CardHeader>
-          <CardContent>
-            {topProducts.length ? (
-              <ProductsChart rows={topProducts} />
-            ) : (
-              <p className="text-sm text-muted-foreground">No product sales in this period.</p>
-            )}
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {metricPreview.map((m) => (
+                <Badge key={m.id} variant="secondary" className="font-mono text-[10px]">
+                  {m.id}
+                </Badge>
+              ))}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Metrics keep prompts grounded in consistent business logic (revenue, orders, shipping, and inventory).
+            </p>
+            <Link href="/dashboard/metrics" className="text-sm font-medium text-[var(--dt-teal)] hover:underline">
+              Open full metrics catalog
+            </Link>
           </CardContent>
         </Card>
       </div>

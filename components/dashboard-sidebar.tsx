@@ -21,7 +21,7 @@ const nav = [
   { href: "/dashboard", label: "Orders", icon: ShoppingCartIcon, match: "never" as const },
   { href: "/dashboard", label: "Customers", icon: UsersIcon, match: "never" as const },
   { href: "/dashboard", label: "Suppliers", icon: TruckIcon, match: "never" as const },
-  { href: "/dashboard/metrics", label: "Reports", icon: FileBarChartIcon, match: "prefix" as const },
+  { href: "/dashboard/metrics", label: "Metrics", icon: FileBarChartIcon, match: "prefix" as const },
   { href: "/dashboard", label: "Agents", icon: BotIcon, match: "never" as const },
 ] as const;
 

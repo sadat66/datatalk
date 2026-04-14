@@ -108,6 +108,11 @@ function messageText(role: string, content: Record<string, unknown>): string {
   return "";
 }
 
+function extractWhatThisShows(text: string): string {
+  const match = text.match(/\*\*What this shows:\*\*\s*([^\r\n]+)/i) ?? text.match(/What this shows:\s*([^\r\n]+)/i);
+  return (match?.[1] ?? "").trim();
+}
+
 function ResultTable({ rows }: { rows: Record<string, unknown>[] }) {
   const columns = useMemo(() => {
     if (!rows.length) return [];
@@ -404,7 +409,7 @@ const ChatMessageBubble = memo(
                 disabled={pdfExportBusy || !onDownloadTablePdf}
                 onClick={() => {
                   if (!sql || !onDownloadTablePdf) return;
-                  void onDownloadTablePdf(sql, text.trim().slice(0, 280));
+                  void onDownloadTablePdf(sql, extractWhatThisShows(text).slice(0, 280));
                 }}
               >
                 <FileDownIcon className="size-3.5" />

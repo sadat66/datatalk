@@ -25,7 +25,6 @@ export type DashboardDataset =
         customersSpark: number[];
       };
       revenueByMonth: { month: number; monthLabel: string; revenue: number; baselineRevenue: number }[];
-      topProducts: { productName: string; units: number }[];
       lateOrders: { orderId: number; customer: string; shipper: string; daysLate: number; value: number }[];
       unfinishedOrders: { orderId: number; customer: string; status: "Open" | "Late"; value: number }[];
       anomalyCount: number;
@@ -261,19 +260,6 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
     const monthlyShippedSeries = Array.from({ length: 12 }, (_, i) => shippedByMonthMap.get(i + 1) ?? 0);
     const monthlyNewCustSeries = Array.from({ length: 12 }, (_, i) => newCustByMonthMap.get(i + 1) ?? 0);
 
-    const topProducts = await sql<{ product_name: string; units: string }[]>`
-      select p.product_name,
-        coalesce(sum(od.quantity::bigint), 0)::text as units
-      from order_details od
-      join products p on p.product_id = od.product_id
-      join orders o on o.order_id = od.order_id
-      where o.order_date is not null
-        and extract(year from o.order_date) = ${focusYear}
-      group by p.product_id, p.product_name
-      order by sum(od.quantity) desc
-      limit 5
-    `;
-
     const lateOrdersRaw = await sql<{
       order_id: number;
       company_name: string | null;
@@ -359,10 +345,6 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
         customersSpark: sparkFromMonthly(monthlyNewCustSeries.length ? monthlyNewCustSeries : monthlyRevenueSeries),
       },
       revenueByMonth,
-      topProducts: topProducts.map((r) => ({
-        productName: r.product_name,
-        units: Number(r.units),
-      })),
       lateOrders: lateOrdersRaw.map((r) => ({
         orderId: r.order_id,
         customer: r.company_name ?? "—",
