@@ -16,24 +16,16 @@ Project plan for the Northwind NL analytics assignment (Next.js, TypeScript, Sup
 
 ---
 
-## Goals (what reviewers will see)
+## Goals 
 
 - A **polished first impression**: minimal **landing** (white / soft gray / restrained green accents) and an **authenticated dashboard** shell (same palette) leading into the product.
 - A **business-facing chat** (shadcn) that turns vague questions into **clarifications or structured plans**, then **safe read-only SQL**, then **narrated results** (numbers + short explanation).
 - **Honest failure**: when the system should not answer, it says why (ambiguous metric, unsafe request, no matching schema).
 - **Show your work** in-product: collapsible “Why this answer?” (plan, SQL, validation steps, confidence rationale) — this supports both tracks and the README/video.
 
-Depth over breadth: implement **one orchestration path** end-to-end extremely well rather than many half-finished modes.
 
----
 
-## Suggested Wild Card (pick one for ~20h scope)
 
-1. **Living “metric dictionary” (recommended)** — Small curated YAML/DB table of business metrics. The UI exposes it; the model must **cite metric IDs** in its plan.
-2. **Embedded eval harness (“trust lab”)** — Golden questions; pass/fail for SQL validity, allowlist, row cap, answer shape.
-3. **Proactive “next questions”** — 2–3 grounded follow-ups after each answer.
-
-**Recommendation:** (1) or (2).
 
 ---
 
@@ -131,8 +123,8 @@ flowchart LR
 
 ## AI models (summary)
 
-- Free/small models OK if validation + repair loop is strong.
-- Cheap paid on OpenRouter: e.g. `openai/gpt-4o-mini` for smoother JSON/SQL.
+
+- Cheap paid on OpenRouter: e.g. `openai/gpt-5.4-mini` for smoother JSON/SQL.
 - Local: Ollama OpenAI-compatible API + ~8B Q4 on 8GB VRAM — pipeline smoke tests.
 
 ---
@@ -147,11 +139,7 @@ flowchart LR
 
 ---
 
-## Edge cases (document even if not fully solved)
 
-- Ambiguous customer names; date windows; NULL dimensions; join fan-out.
-
----
 
 ## Implementation order
 
@@ -162,12 +150,10 @@ flowchart LR
 5. Orchestration API + auth gate.
 6. Chat UI + persistence + trust panel.
 7. Query intelligence polish.
-8. Wild card.
-9. README + video.
+8. README 
 
 ---
 
 ## Out of scope (for this prototype)
-
 - Fine-tuning custom models.
 - Heavy multi-agent frameworks — prefer explicit staged pipeline.
