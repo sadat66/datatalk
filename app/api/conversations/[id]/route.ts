@@ -22,7 +22,8 @@ export async function DELETE(_request: Request, context: RouteContext) {
   const { error } = await supabase.from("conversations").delete().eq("id", id).eq("user_id", user.id);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("[conversations/delete] supabase error:", error.message);
+    return NextResponse.json({ error: "Failed to delete conversation" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

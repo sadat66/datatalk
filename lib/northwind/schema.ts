@@ -139,5 +139,11 @@ export function buildSqlWhitelist(): { tables: string[]; columns: string[] } {
       columns.push(`select::${table}::${col}`);
     }
   }
+  /**
+   * node-sql-parser emits alias-qualified columns as select::<alias>::<col>, e.g. select::pr::product_id
+   * from `FROM (SELECT …) pr`. Real tables already match select::<table>::<col> above; this pattern covers
+   * subquery/CTE aliases and aggregate labels (revenue, etc.). Table allowlisting still gates FROM sources.
+   */
+  columns.push("select::[^:]+::\\w+");
   return { tables, columns };
 }

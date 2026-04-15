@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
+import { signupAction } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -110,7 +111,7 @@ export function SignupForm() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="relative space-y-4" aria-busy={pending}>
+    <form action={signupAction} onSubmit={onSubmit} className="relative space-y-4" aria-busy={pending}>
       {pending ? (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/75 backdrop-blur-sm">
           <span className="size-10 animate-spin rounded-full border-4 border-primary/25 border-t-primary" />
