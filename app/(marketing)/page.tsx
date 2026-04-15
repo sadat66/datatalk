@@ -66,7 +66,7 @@ export default async function HomePage() {
             </h1>
             <p className="text-pretty text-lg leading-relaxed text-muted-foreground">
               DataTalk connects to your Northwind-style warehouse, validates SQL, and explains answers so
-              stakeholders get numbers they can trust — with an agent always at hand.
+              stakeholders get numbers they can trust, with an agent always close by.
             </p>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               {user ? (
@@ -104,7 +104,7 @@ export default async function HomePage() {
           <div className="relative">
             <MarketingDashboardPreview />
             <p className="mt-3 text-center text-xs text-muted-foreground">
-              Product preview — your workspace uses the same visual system after sign in.
+              Product preview - your workspace uses the same visual system after sign in.
             </p>
           </div>
         </div>
@@ -131,7 +131,7 @@ export default async function HomePage() {
             },
             {
               title: "DataTalk Agent",
-              desc: "Natural language on the right rail — ask follow-ups without leaving the numbers.",
+              desc: "Natural language on the right rail - ask follow-ups without leaving the numbers.",
               icon: MessageSquareIcon,
             },
           ].map((f) => (
@@ -151,9 +151,10 @@ export default async function HomePage() {
       <footer className="mt-auto border-t border-border bg-muted/30 py-10">
         <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-4 px-4 sm:flex-row sm:items-center sm:px-6">
           <DataTalkLogo size="sm" />
-          <p className="text-xs text-muted-foreground">© {new Date().getFullYear()} DataTalk</p>
+          <p className="text-xs text-muted-foreground">(c) {new Date().getFullYear()} DataTalk</p>
         </div>
       </footer>
     </div>
   );
 }
+
