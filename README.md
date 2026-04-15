@@ -59,9 +59,6 @@ Create `.env.local` in the project root.
 6. Start the app with `npm run dev`.
 7. Open [http://localhost:3000](http://localhost:3000).
 
-## Demo Flow
-
-For a short walkthrough, this sequence works well:
 
 1. Landing page
 2. Sign up or log in
