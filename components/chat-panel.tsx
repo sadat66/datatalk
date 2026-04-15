@@ -15,20 +15,18 @@ import {
   Loader2Icon,
   MicIcon,
   SquareIcon,
-  Trash2Icon,
 } from "lucide-react";
 
 import { ChatMessageBubble } from "@/components/chat/chat-message-bubble";
+import { ConversationList } from "@/components/chat/conversation-list";
 import { parseSseEvents } from "@/components/chat/sse";
 import type { ChatResponse, Conversation, MessageRow } from "@/components/chat/types";
 import type { ConversationsPanelPayload } from "@/lib/conversations/panel-data";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { downloadResultTablePdf } from "@/lib/export-result-table-pdf";
-import { formatRelativeTime } from "@/lib/format-relative-time";
 import { cn } from "@/lib/utils";
 
 type BrowserSpeechRecognition = {
@@ -578,81 +576,20 @@ export function ChatPanel({
     [conversationId, startNewChat],
   );
 
-  const renderConversationList = (scrollAreaClassName: string) => (
-    <>
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        className="w-full"
-        onClick={startNewChat}
-      >
-        New chat
-      </Button>
-      <Separator />
-      <ScrollArea
-        className={
-          embedded ? "h-[120px] pr-2" : cn("min-h-0 overflow-hidden pr-2", scrollAreaClassName)
-        }
-      >
-        {loadingList ? (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2Icon className="size-3.5 animate-spin" />
-            Loading…
-          </div>
-        ) : (
-          <div className="space-y-1">
-            {conversations.map((c) => (
-              <div
-                key={c.id}
-                className={cn(
-                  "flex items-stretch gap-0.5 rounded-md border border-transparent",
-                  conversationId === c.id && "border-border bg-muted/60",
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    isCreatingConversationRef.current = false;
-                    setConversationId(c.id);
-                    void refreshConversationPanel(c.id);
-                  }}
-                  className="min-w-0 flex-1 px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/80"
-                >
-                  <span className="line-clamp-2 font-medium">{c.title || "Untitled"}</span>
-                  <span className="mt-0.5 block text-[10px] text-muted-foreground tabular-nums">
-                    {formatRelativeTime(c.created_at)}
-                  </span>
-                </button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  className="mt-0.5 mb-0.5 shrink-0 text-muted-foreground hover:text-destructive"
-                  disabled={deletingConversationId === c.id}
-                  aria-label={`Delete conversation ${c.title || "Untitled"}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void deleteConversation(c.id);
-                  }}
-                >
-                  {deletingConversationId === c.id ? (
-                    <Loader2Icon className="size-3.5 animate-spin" />
-                  ) : (
-                    <Trash2Icon className="size-3.5" />
-                  )}
-                </Button>
-              </div>
-            ))}
-            {!conversations.length ? (
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                No chats yet — start a message below.
-              </p>
-            ) : null}
-          </div>
-        )}
-      </ScrollArea>
-    </>
+  const selectConversation = useCallback(
+    (id: string) => {
+      isCreatingConversationRef.current = false;
+      setConversationId(id);
+      void refreshConversationPanel(id);
+    },
+    [refreshConversationPanel],
+  );
+
+  const handleDeleteConversation = useCallback(
+    (id: string) => {
+      void deleteConversation(id);
+    },
+    [deleteConversation],
   );
 
   return (
@@ -670,7 +607,17 @@ export function ChatPanel({
             <CardDescription className="text-xs leading-normal">Your saved threads</CardDescription>
           </CardHeader>
           <CardContent className="min-h-0 space-y-2">
-            {renderConversationList("h-[min(220px,38dvh)] sm:h-[320px]")}
+            <ConversationList
+              embedded={embedded}
+              scrollAreaClassName="h-[min(220px,38dvh)] sm:h-[320px]"
+              loadingList={loadingList}
+              conversations={conversations}
+              activeConversationId={conversationId}
+              deletingConversationId={deletingConversationId}
+              onStartNewChat={startNewChat}
+              onSelectConversation={selectConversation}
+              onDeleteConversation={handleDeleteConversation}
+            />
           </CardContent>
         </Card>
       ) : null}
@@ -705,7 +652,19 @@ export function ChatPanel({
               />
             </button>
             {mobileThreadsOpen ? (
-              <div className="mt-2 space-y-2">{renderConversationList("h-[min(140px,26dvh)]")}</div>
+              <div className="mt-2 space-y-2">
+                <ConversationList
+                  embedded={embedded}
+                  scrollAreaClassName="h-[min(140px,26dvh)]"
+                  loadingList={loadingList}
+                  conversations={conversations}
+                  activeConversationId={conversationId}
+                  deletingConversationId={deletingConversationId}
+                  onStartNewChat={startNewChat}
+                  onSelectConversation={selectConversation}
+                  onDeleteConversation={handleDeleteConversation}
+                />
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -762,7 +721,17 @@ export function ChatPanel({
           {embedded ? (
             <div className="mt-3 space-y-2">
               <p className="text-xs font-medium text-muted-foreground">Threads</p>
-              {renderConversationList("")}
+              <ConversationList
+                embedded={embedded}
+                scrollAreaClassName=""
+                loadingList={loadingList}
+                conversations={conversations}
+                activeConversationId={conversationId}
+                deletingConversationId={deletingConversationId}
+                onStartNewChat={startNewChat}
+                onSelectConversation={selectConversation}
+                onDeleteConversation={handleDeleteConversation}
+              />
             </div>
           ) : null}
         </CardHeader>
