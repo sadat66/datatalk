@@ -2,36 +2,26 @@ import { buildConversationContext } from "@/lib/datatalk/query-intelligence";
 import {
   CHAT_RESULT_PAGE_SIZE,
   executeReadonlySelect,
-  explainValidateReadonlySelect,
-  isExplainValidateEnabled,
 } from "@/lib/datatalk/executor";
-import {
-  getConfidenceRunThreshold,
-  isIntentVerifierEnabled,
-  verifySqlAgainstIntent,
-} from "@/lib/datatalk/intent-verifier";
-import { type LlmPipelineResult, type TrustReport } from "@/lib/datatalk/types";
 import { buildTrustReport } from "@/lib/datatalk/trust";
 import { inferJoinFanoutTrustPenalty } from "@/lib/datatalk/join-risk";
 import { validateSelectSql, type SqlValidationResult } from "@/lib/datatalk/sql-validator";
 import { sqlContextFollowUp } from "@/lib/datatalk/conversation-nudges";
-import { critiqueNorthwindSql, isSqlCritiqueEnabled } from "@/lib/datatalk/sql-critique";
-import { checkNarrativeNumericGrounding, correctNarrative } from "@/lib/datatalk/narrative-consistency";
+import { checkNarrativeNumericGrounding } from "@/lib/datatalk/narrative-consistency";
+import { runModel } from "@/lib/datatalk/orchestrator-llm";
+import { isReferentialFollowUpMessage } from "@/lib/datatalk/query-heuristics";
 import {
-  MAX_REPAIR_ATTEMPTS,
-  repairFailureMessage,
-  repairSql,
-  repairSqlForExplain,
-  repairSqlForIntent,
-  runModel,
-} from "@/lib/datatalk/orchestrator-llm";
+  runValidationStage,
+} from "@/lib/datatalk/orchestrator/validation-stage";
 import {
-  buildTrustSpecNudge,
-  enforceRequestedTopN,
-  isReferentialFollowUpMessage,
-} from "@/lib/datatalk/query-heuristics";
-
-type Turn = { role: "user" | "assistant"; text: string };
+  runVerificationStage,
+} from "@/lib/datatalk/orchestrator/verification-stage";
+import { runExecutionStage } from "@/lib/datatalk/orchestrator/execution-stage";
+import {
+  buildPaginationRowPreview,
+  runTrustStage,
+} from "@/lib/datatalk/orchestrator/trust-stage";
+import type { OrchestratorResult, Turn } from "@/lib/datatalk/orchestrator/stage-types";
 
 function isVeryShortReferentialFollowUp(message: string): boolean {
   const trimmed = message.trim().toLowerCase();
@@ -70,23 +60,7 @@ function joinFanoutPenalty(sql: string | null | undefined, validated?: SqlValida
   return inferJoinFanoutTrustPenalty(sql);
 }
 
-export type OrchestratorResult = {
-  assistant_message: string;
-  kind: LlmPipelineResult["kind"];
-  sql?: string;
-  rows?: Record<string, unknown>[];
-  trust: TrustReport;
-  plan_summary?: string | null;
-  metric_ids?: string[];
-  assumptions?: string[];
-  clarify_question?: string | null;
-  /** Offered when trust is medium on a data-backed answer — user can confirm strict verification */
-  trustUpgradeSuggestion?: string;
-  /** More rows exist — client sends `resultOffset` for the next page */
-  resultHasMore?: boolean;
-  /** Pass as `resultOffset` on the next request to fetch the next page (15 rows) */
-  resultNextOffset?: number | null;
-};
+export type { OrchestratorResult } from "@/lib/datatalk/orchestrator/stage-types";
 
 async function runPaginationPage(input: {
   lastDataSql: string;
@@ -145,13 +119,7 @@ async function runPaginationPage(input: {
 
   const hasMore = exec.limited;
   const nextOffset = hasMore ? offset + CHAT_RESULT_PAGE_SIZE : null;
-  const rangeStart = offset + (exec.rowCount > 0 ? 1 : 0);
-  const rangeEnd = offset + exec.rowCount;
-
-  const rowPreview =
-    exec.rowCount === 0
-      ? "No more rows for this query."
-      : `Returned ${exec.rowCount} row(s) (rows ${rangeStart}–${rangeEnd} of the full result; ${CHAT_RESULT_PAGE_SIZE} per page).`;
+  const rowPreview = buildPaginationRowPreview(exec.rowCount, offset);
 
   const narrative = "Next page of results from your previous query.";
   const narrativeGrounding = checkNarrativeNumericGrounding(narrative, exec.rows);
@@ -213,7 +181,6 @@ export async function runOrchestrator(input: {
   }
   const context = buildConversationContext(input.turns, input.message, extraHints);
   const intentQuestion = buildIntentVerificationQuestion(input.turns, input.message);
-  let hadRepair = false;
 
   const model = await runModel(context);
 
@@ -248,87 +215,27 @@ export async function runOrchestrator(input: {
     };
   }
 
-  const sqlAfterLlm = sql;
-  const runSqlCritique =
-    input.strictVerification || (isSqlCritiqueEnabled() && inferJoinFanoutTrustPenalty(sql));
-  if (runSqlCritique) {
-    try {
-      const cr = await critiqueNorthwindSql({ userQuestion: input.message, sql });
-      const rev = typeof cr.revised_sql === "string" ? cr.revised_sql.trim() : "";
-      if (!cr.ok_to_run && rev) {
-        const revVal = validateSelectSql(rev);
-        if (revVal.ok) {
-          sql = rev;
-        }
-      }
-    } catch {
-      /* optional second LLM; ignore */
-    }
-  }
-  const critiqueReplacedSql = sql !== sqlAfterLlm;
-  sql = enforceRequestedTopN(sql, input.message);
-
-  let validation = validateSelectSql(sql);
-  let failedValidationErrors = !validation.ok ? [...validation.errors] : [];
-  if (!validation.ok) {
-    const validationAttempts: { sql: string; errors: string[] }[] = [];
-    let repairFailed = false;
-    for (let attempt = 0; attempt < MAX_REPAIR_ATTEMPTS; attempt += 1) {
-      try {
-        sql = await repairSql(context, sql, validation.ok ? [] : validation.errors, validationAttempts.length > 0 ? validationAttempts : undefined);
-        sql = enforceRequestedTopN(sql, input.message);
-        hadRepair = true;
-        validation = validateSelectSql(sql);
-        if (validation.ok) break;
-        validationAttempts.push({ sql, errors: [...validation.errors] });
-        failedValidationErrors = [...validation.errors];
-      } catch (err) {
-        repairFailed = true;
-        const trust = buildTrustReport({
-          pipeline: "validation_failed",
-          validationPassed: false,
-          validationDetails: failedValidationErrors,
-          rowCount: 0,
-          limited: false,
-          executionMs: 0,
-          skippedExecution: true,
-          hadRepair,
-          joinHeuristic: joinFanoutPenalty(sql),
-        });
-        return {
-          assistant_message: `I could not generate a safe query for that request. (${repairFailureMessage(err)})`,
-          kind: "answer",
-          trust,
-        };
-      }
-    }
-    if (!repairFailed && !validation.ok) {
-      const trust = buildTrustReport({
-        pipeline: "validation_failed",
-        validationPassed: false,
-        validationDetails: validation.errors,
-        rowCount: 0,
-        limited: false,
-        executionMs: 0,
-        skippedExecution: true,
-        hadRepair,
-        joinHeuristic: joinFanoutPenalty(sql),
-      });
-      return {
-        assistant_message: `That query failed safety checks after ${MAX_REPAIR_ATTEMPTS} repair attempt(s). Please rephrase your question.`,
-        kind: "answer",
-        trust,
-      };
-    }
-  }
-
-  if (!validation.ok) {
-    throw new Error("Unreachable: validation must be ok after repair loop");
+  // Stage 1: SQL critique + deterministic validation/repair.
+  const validationStage = await runValidationStage({
+    context,
+    message: input.message,
+    initialSql: sql,
+    strictVerification: input.strictVerification,
+  });
+  if (!validationStage.ok) {
+    return {
+      assistant_message: validationStage.failure.assistant_message,
+      kind: "answer",
+      trust: validationStage.failure.trust,
+    };
   }
 
   if (isVeryShortReferentialFollowUp(input.message) && input.lastSuccessfulDataSql?.trim()) {
     const previousValidation = validateSelectSql(input.lastSuccessfulDataSql.trim());
-    if (previousValidation.ok && previousValidation.normalizedSql === validation.normalizedSql) {
+    if (
+      previousValidation.ok &&
+      previousValidation.normalizedSql === validationStage.validation.normalizedSql
+    ) {
       const trust = buildTrustReport({ pipeline: "clarify" });
       return {
         assistant_message:
@@ -342,271 +249,34 @@ export async function runOrchestrator(input: {
     }
   }
 
-  let validatedSql = validation.normalizedSql;
-  let explainValidated = false;
-  let intentVerifierRan = false;
-  let intentVerifierError = false;
-  let intentConfidence: number | undefined;
-  let intentAligned: boolean | undefined;
-
-  if (isExplainValidateEnabled()) {
-    let exRes = await explainValidateReadonlySelect(validatedSql);
-    if (!exRes.ok) {
-      const firstExplainError = exRes.error;
-      const explainAttempts: { sql: string; error: string }[] = [];
-      let explainRecovered = false;
-
-      for (let attempt = 0; attempt < MAX_REPAIR_ATTEMPTS; attempt += 1) {
-        try {
-          const repairedSql = await repairSqlForExplain({
-            context,
-            previousSql: validatedSql,
-            userMessage: input.message,
-            explainError: exRes.error,
-            priorAttempts: explainAttempts.length > 0 ? explainAttempts : undefined,
-          });
-          const repairedValidation = validateSelectSql(enforceRequestedTopN(repairedSql, input.message));
-          if (!repairedValidation.ok) {
-            explainAttempts.push({ sql: repairedSql, error: `Static validation: ${repairedValidation.errors.join("; ")}` });
-            continue;
-          }
-          validatedSql = repairedValidation.normalizedSql;
-          validation = repairedValidation;
-          sql = validatedSql;
-          hadRepair = true;
-          exRes = await explainValidateReadonlySelect(validatedSql);
-          if (exRes.ok) {
-            explainRecovered = true;
-            break;
-          }
-          explainAttempts.push({ sql: validatedSql, error: exRes.error });
-        } catch (err) {
-          const trust = buildTrustReport({
-            pipeline: "execution_failed",
-            validationPassed: true,
-            validationDetails: [
-              "Parsed SQL and allowlist checks passed.",
-              `EXPLAIN dry-run failed: ${firstExplainError}`,
-              `Automatic repair failed after ${attempt + 1} attempt(s): ${repairFailureMessage(err)}`,
-            ],
-            rowCount: 0,
-            limited: false,
-            executionMs: 0,
-            skippedExecution: true,
-            hadRepair,
-            joinHeuristic: joinFanoutPenalty(validatedSql, validation),
-          });
-          return {
-            assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${firstExplainError}`,
-            kind: "answer",
-            sql: validatedSql,
-            trust,
-            plan_summary: model.plan_summary,
-            metric_ids: model.metric_ids,
-            assumptions: model.assumptions,
-          };
-        }
-      }
-
-      if (!explainRecovered) {
-        const lastError = explainAttempts.length > 0 ? explainAttempts[explainAttempts.length - 1].error : (!exRes.ok ? exRes.error : firstExplainError);
-        const trust = buildTrustReport({
-          pipeline: "execution_failed",
-          validationPassed: true,
-          validationDetails: [
-            "Parsed SQL and allowlist checks passed.",
-            `EXPLAIN dry-run failed: ${lastError}`,
-            `Automatic repair exhausted ${MAX_REPAIR_ATTEMPTS} attempt(s).`,
-          ],
-          rowCount: 0,
-          limited: false,
-          executionMs: 0,
-          skippedExecution: true,
-          hadRepair,
-          joinHeuristic: joinFanoutPenalty(validatedSql, validation),
-        });
-        return {
-          assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${lastError}`,
-          kind: "answer",
-          sql: validatedSql,
-          trust,
-          plan_summary: model.plan_summary,
-          metric_ids: model.metric_ids,
-          assumptions: model.assumptions,
-        };
-      }
-    }
-    explainValidated = true;
-  }
-
-  if (isIntentVerifierEnabled()) {
-    try {
-      const iv = await verifySqlAgainstIntent({
-        userQuestion: intentQuestion,
-        sql: validatedSql,
-      });
-      if (iv == null) {
-        intentVerifierError = true;
-      } else {
-        intentVerifierRan = true;
-        intentConfidence = iv.confidence_0_100;
-        intentAligned = iv.aligned;
-        const threshold = getConfidenceRunThreshold();
-        const shouldHold = iv.confidence_0_100 < threshold || iv.aligned === false;
-        if (shouldHold) {
-          let recovered = false;
-          const hasFeedback = iv.mismatches.length > 0 || (iv.clarify_suggestion?.trim().length ?? 0) > 0;
-
-          if (hasFeedback) {
-            const intentAttempts: { sql: string; confidence: number; mismatches: string[] }[] = [];
-            let currentSql = validatedSql;
-            let currentMismatches = iv.mismatches;
-            let currentConfidence = iv.confidence_0_100;
-            let currentClarify = iv.clarify_suggestion;
-
-            for (let attempt = 0; attempt < MAX_REPAIR_ATTEMPTS; attempt += 1) {
-              try {
-                const repairedSql = await repairSqlForIntent({
-                  context,
-                  previousSql: currentSql,
-                  userMessage: input.message,
-                  confidence: currentConfidence,
-                  mismatches: currentMismatches,
-                  clarifySuggestion: currentClarify,
-                  priorAttempts: intentAttempts.length > 0 ? intentAttempts : undefined,
-                });
-                const repairedValidation = validateSelectSql(enforceRequestedTopN(repairedSql, input.message));
-                if (!repairedValidation.ok) {
-                  intentAttempts.push({ sql: repairedSql, confidence: 0, mismatches: repairedValidation.errors });
-                  continue;
-                }
-                if (isExplainValidateEnabled()) {
-                  const exRes = await explainValidateReadonlySelect(repairedValidation.normalizedSql);
-                  if (!exRes.ok) {
-                    intentAttempts.push({ sql: repairedValidation.normalizedSql, confidence: 0, mismatches: [`EXPLAIN failed: ${exRes.error}`] });
-                    continue;
-                  }
-                  explainValidated = true;
-                }
-                const repairedIv = await verifySqlAgainstIntent({
-                  userQuestion: intentQuestion,
-                  sql: repairedValidation.normalizedSql,
-                });
-                if (
-                  repairedIv &&
-                  repairedIv.aligned !== false &&
-                  repairedIv.confidence_0_100 >= threshold
-                ) {
-                  validation = repairedValidation;
-                  sql = repairedValidation.normalizedSql;
-                  hadRepair = true;
-                  intentConfidence = repairedIv.confidence_0_100;
-                  intentAligned = repairedIv.aligned;
-                  recovered = true;
-                  break;
-                }
-                intentAttempts.push({
-                  sql: repairedValidation.normalizedSql,
-                  confidence: repairedIv?.confidence_0_100 ?? 0,
-                  mismatches: repairedIv?.mismatches ?? [],
-                });
-                currentSql = repairedValidation.normalizedSql;
-                currentConfidence = repairedIv?.confidence_0_100 ?? currentConfidence;
-                currentMismatches = repairedIv?.mismatches ?? currentMismatches;
-                currentClarify = repairedIv?.clarify_suggestion ?? currentClarify;
-              } catch {
-                break;
-              }
-            }
-          }
-
-          if (!recovered) {
-            const clarifyQ =
-              iv.clarify_suggestion?.trim() ||
-              `Which interpretation should we use? (Verification confidence ${iv.confidence_0_100}% is below the ${threshold}% run threshold.)`;
-            const intro = `I have not run the query against the database — intent verification scored ${iv.confidence_0_100}% confidence${iv.aligned === false ? " and flagged alignment issues" : ""} (threshold ${threshold}%).`;
-            const mismatchLine =
-              iv.mismatches.length > 0
-                ? `Potential mismatches: ${iv.mismatches.slice(0, 5).join("; ")}`
-                : "";
-            const explainLine = iv.plain_explanation
-              ? `Proposed SQL would: ${iv.plain_explanation}`
-              : "";
-            const assistant_message = [intro, mismatchLine, explainLine].filter(Boolean).join("\n\n");
-            const trust = buildTrustReport({ pipeline: "clarify" });
-            return {
-              assistant_message: `${assistant_message}\n\n${clarifyQ}`,
-              kind: "clarify",
-              trust,
-              plan_summary: model.plan_summary,
-              clarify_question: clarifyQ,
-            };
-          }
-        }
-      }
-    } catch {
-      intentVerifierError = true;
-    }
-  }
-
-  type OkValidation = Extract<SqlValidationResult, { ok: true }>;
-  const executionAttempts: { key: "primary" | "pre_critique" | "previous_turn"; v: OkValidation }[] = [];
-  const seenNorm = new Set<string>();
-  const pushAttempt = (
-    key: "primary" | "pre_critique" | "previous_turn",
-    res: SqlValidationResult,
-  ) => {
-    if (!res.ok) return;
-    if (seenNorm.has(res.normalizedSql)) return;
-    seenNorm.add(res.normalizedSql);
-    executionAttempts.push({ key, v: res });
-  };
-  pushAttempt("primary", validation);
-  if (critiqueReplacedSql) {
-    pushAttempt("pre_critique", validateSelectSql(sqlAfterLlm));
-  }
-  if (input.strictVerification && input.lastSuccessfulDataSql?.trim()) {
-    pushAttempt("previous_turn", validateSelectSql(input.lastSuccessfulDataSql.trim()));
-  }
-
-  if (!validation.ok) {
-    throw new Error("Unreachable: validation must be ok before execution");
-  }
-
-  let exec = await executeReadonlySelect(validation.normalizedSql, {
-    maxRows: CHAT_RESULT_PAGE_SIZE,
-    offset: 0,
+  // Stage 2: server-side EXPLAIN and intent verification, with clarify-first fallback.
+  const verificationStage = await runVerificationStage({
+    context,
+    userMessage: input.message,
+    intentQuestion,
+    validatedSql: validationStage.validatedSql,
+    validation: validationStage.validation,
+    hadRepair: validationStage.hadRepair,
+    model: {
+      plan_summary: model.plan_summary,
+      metric_ids: model.metric_ids,
+      assumptions: model.assumptions,
+    },
   });
-  const primaryExecError = exec.ok ? "" : exec.error;
-  let usedAttemptKey: "primary" | "pre_critique" | "previous_turn" = "primary";
-  let usedValidation: OkValidation = validation;
-  let lastFallbackError = "";
-
-  if (!exec.ok && executionAttempts.length > 1) {
-    for (let i = 1; i < executionAttempts.length; i += 1) {
-      const a = executionAttempts[i];
-      const e = await executeReadonlySelect(a.v.normalizedSql, {
-        maxRows: CHAT_RESULT_PAGE_SIZE,
-        offset: 0,
-      });
-      if (!e.ok) {
-        lastFallbackError = e.error;
-      }
-      if (e.ok) {
-        exec = e;
-        usedAttemptKey = a.key;
-        usedValidation = a.v;
-        if (a.key === "pre_critique") {
-          sql = sqlAfterLlm;
-        } else if (a.key === "previous_turn" && input.lastSuccessfulDataSql?.trim()) {
-          sql = input.lastSuccessfulDataSql.trim();
-        }
-        break;
-      }
-    }
+  if (verificationStage.kind === "return") {
+    return verificationStage.result;
   }
 
-  if (!exec.ok) {
+  // Stage 3: execute the chosen SQL and runtime fallbacks.
+  const executionStage = await runExecutionStage({
+    validation: verificationStage.validation,
+    validatedSql: verificationStage.validatedSql,
+    critiqueReplacedSql: validationStage.critiqueReplacedSql,
+    sqlAfterLlm: validationStage.sqlAfterLlm,
+    strictVerification: input.strictVerification,
+    lastSuccessfulDataSql: input.lastSuccessfulDataSql,
+  });
+  if (!executionStage.ok) {
     const trust = buildTrustReport({
       pipeline: "execution_failed",
       validationPassed: true,
@@ -615,13 +285,13 @@ export async function runOrchestrator(input: {
       limited: false,
       executionMs: 0,
       skippedExecution: true,
-      hadRepair,
-      joinHeuristic: joinFanoutPenalty(validatedSql, validation),
+      hadRepair: verificationStage.hadRepair,
+      joinHeuristic: joinFanoutPenalty(executionStage.validatedSql, executionStage.validation),
     });
     return {
-      assistant_message: `The query could not be executed: ${primaryExecError || lastFallbackError || exec.error}`,
+      assistant_message: `The query could not be executed: ${executionStage.primaryExecError || executionStage.lastFallbackError}`,
       kind: "answer",
-      sql: validatedSql,
+      sql: executionStage.validatedSql,
       trust,
       plan_summary: model.plan_summary,
       metric_ids: model.metric_ids,
@@ -629,108 +299,29 @@ export async function runOrchestrator(input: {
     };
   }
 
-  const executionFallbackNote =
-    usedAttemptKey === "pre_critique"
-      ? "**Note:** The extra SQL review suggested a revision that failed at runtime; results use the **original** model query instead.\n\n"
-      : usedAttemptKey === "previous_turn"
-        ? "**Note:** The strict verification run produced a query that failed at runtime; showing results from your **previous successful** query instead.\n\n"
-        : "";
-
-  const hasMore = exec.limited;
-  const resultNextOffset = hasMore ? CHAT_RESULT_PAGE_SIZE : null;
-
-  const rowPreview =
-    exec.rows.length === 0
-      ? "No rows matched."
-      : `Returned ${exec.rowCount} row(s)${exec.limited ? ` (up to ${CHAT_RESULT_PAGE_SIZE} per answer; more available — use Next ${CHAT_RESULT_PAGE_SIZE})` : ""}.`;
-
-  const trimmedNarrative = model.assistant_message.trim();
-  const narrativeGrounding = checkNarrativeNumericGrounding(trimmedNarrative, exec.rows, model.plan_summary);
-
-  let finalNarrative = trimmedNarrative;
-  let narrativeCorrected = false;
-  if (!narrativeGrounding.ok && exec.rows.length > 0) {
-    const corrected = await correctNarrative({
-      originalNarrative: trimmedNarrative,
-      rows: exec.rows,
-      groundingNotes: narrativeGrounding.notes,
-      planSummary: model.plan_summary,
-    });
-    if (corrected) {
-      finalNarrative = corrected;
-      narrativeCorrected = true;
-    }
-  }
-
-  const validationDetails: string[] = [
-    "Parsed SQL",
-    "Allowlisted tables/columns",
-    "Single SELECT",
-  ];
-  if (explainValidated) validationDetails.push("EXPLAIN dry-run succeeded (server-side)");
-  if (intentVerifierRan && typeof intentConfidence === "number") {
-    validationDetails.push(`Intent verification confidence ${intentConfidence}/100`);
-  }
-  if (intentVerifierError) validationDetails.push("Intent verification skipped or failed — SQL still statically validated");
-  if (usedAttemptKey !== "primary") {
-    validationDetails.push(
-      "Runtime fallback: a different validated SQL ran after the primary failed — EXPLAIN and intent checks targeted the primary candidate.",
-    );
-  }
-  if (narrativeCorrected) validationDetails.push("Narrative auto-corrected to match result data");
-
-  const narrativeGroundingForTrust = narrativeCorrected
-    ? { ok: true, suspiciousNumbers: [], notes: [] }
-    : narrativeGrounding;
-
-  const trust = buildTrustReport({
-    pipeline: "data",
-    validationPassed: true,
-    validationDetails,
-    rowCount: exec.rowCount,
-    limited: exec.limited,
-    executionMs: exec.ms,
-    skippedExecution: false,
-    hadRepair,
-    joinHeuristic: joinFanoutPenalty(sql, usedValidation),
-    narrativeGrounding: narrativeGroundingForTrust,
-    strictVerification: input.strictVerification === true,
-    explainValidated: explainValidated || undefined,
-    intentVerifierRan: intentVerifierRan || undefined,
-    intentVerifierError: intentVerifierError || undefined,
-    intentConfidence,
-    intentAligned,
-    emptyResultSet: exec.rowCount === 0 || undefined,
+  // Stage 4: trust synthesis + user-facing reliability copy.
+  return runTrustStage({
+    message: input.message,
+    model: {
+      assistant_message: model.assistant_message,
+      plan_summary: model.plan_summary,
+      metric_ids: model.metric_ids,
+      assumptions: model.assumptions,
+    },
+    strictVerification: input.strictVerification,
+    hadRepair: verificationStage.hadRepair,
+    explainValidated: verificationStage.explainValidated,
+    intentVerifierRan: verificationStage.intentVerifierRan,
+    intentVerifierError: verificationStage.intentVerifierError,
+    intentConfidence: verificationStage.intentConfidence,
+    intentAligned: verificationStage.intentAligned,
+    execution: executionStage.exec,
+    usedValidation: executionStage.usedValidation,
+    usedAttemptKey: executionStage.usedAttemptKey,
+    effectiveSql: executionStage.effectiveSql,
+    executionFallbackNote: executionStage.executionFallbackNote,
+    rowPreview: executionStage.rowPreview,
+    hasMore: executionStage.hasMore,
+    resultNextOffset: executionStage.resultNextOffset,
   });
-
-  const reliabilityBanner = narrativeCorrected
-    ? "**Reliability:** This summary was auto-corrected to match the database results.\n\n"
-    : !narrativeGrounding.ok
-      ? "**Reliability:** Some numbers in the text below may not match the database — **use the result summary and table as the source of truth.**\n\n"
-      : "";
-
-  const planLine =
-    typeof model.plan_summary === "string" && model.plan_summary.trim().length > 0
-      ? `**What this shows:** ${model.plan_summary.trim()}\n\n`
-      : "";
-
-  const emptyRowsNote =
-    exec.rowCount === 0
-      ? "**Note:** No rows matched. If you expected data, the filters may not match the Northwind sample (mostly 1996–1998) or category/region names may differ.\n\n"
-      : "";
-  const trustSpecNudge = buildTrustSpecNudge(input.message);
-
-  return {
-    assistant_message: `${executionFallbackNote}${reliabilityBanner}${planLine}${emptyRowsNote}${finalNarrative}${trustSpecNudge}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
-    kind: "answer",
-    sql: usedValidation.normalizedSql,
-    rows: exec.rows,
-    trust,
-    plan_summary: model.plan_summary,
-    metric_ids: model.metric_ids,
-    assumptions: model.assumptions,
-    trustUpgradeSuggestion: undefined,
-    resultHasMore: hasMore,
-    resultNextOffset,
-  };
 }
