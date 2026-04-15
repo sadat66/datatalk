@@ -1,7 +1,3 @@
-import { chatCompletionJson } from "@/lib/ai/completion";
-import { metricsPromptBlock } from "@/lib/northwind/metrics";
-import { buildColumnSemanticsHint, buildSchemaPromptExcerpt } from "@/lib/northwind/schema";
-import { goldStandardExamplesBlock } from "@/lib/northwind/gold-examples";
 import { buildConversationContext } from "@/lib/datatalk/query-intelligence";
 import {
   CHAT_RESULT_PAGE_SIZE,
@@ -14,123 +10,63 @@ import {
   isIntentVerifierEnabled,
   verifySqlAgainstIntent,
 } from "@/lib/datatalk/intent-verifier";
-import { llmPipelineSchema, type LlmPipelineResult, type TrustReport } from "@/lib/datatalk/types";
+import { type LlmPipelineResult, type TrustReport } from "@/lib/datatalk/types";
 import { buildTrustReport } from "@/lib/datatalk/trust";
 import { inferJoinFanoutTrustPenalty } from "@/lib/datatalk/join-risk";
 import { validateSelectSql, type SqlValidationResult } from "@/lib/datatalk/sql-validator";
 import { sqlContextFollowUp } from "@/lib/datatalk/conversation-nudges";
 import { critiqueNorthwindSql, isSqlCritiqueEnabled } from "@/lib/datatalk/sql-critique";
 import { checkNarrativeNumericGrounding } from "@/lib/datatalk/narrative-consistency";
+import {
+  repairFailureMessage,
+  repairSql,
+  repairSqlForExplain,
+  repairSqlForIntent,
+  runModel,
+} from "@/lib/datatalk/orchestrator-llm";
+import {
+  buildTrustSpecNudge,
+  enforceRequestedTopN,
+  isReferentialFollowUpMessage,
+} from "@/lib/datatalk/query-heuristics";
 
 type Turn = { role: "user" | "assistant"; text: string };
 
-const SYSTEM_PROMPT = `You are DataTalk, an analytics assistant for the Northwind PostgreSQL database.
-You must respond with a single JSON object (no markdown) using this shape:
-{
-  "kind": "answer" | "clarify" | "refuse",
-  "assistant_message": string (short, business-friendly),
-  "clarify_question": string | null (one targeted question if kind is clarify),
-  "sql": string | null (a single PostgreSQL SELECT if kind is answer; otherwise null),
-  "plan_summary": string | null (required when sql is non-null: one sentence "explain-back" describing what the query returns in plain English — e.g. "Total revenue by category for all years in the sample."),
-  "metric_ids": string[] | null (subset of known metric ids when applicable),
-  "assumptions": string[] | null
+function isVeryShortReferentialFollowUp(message: string): boolean {
+  const trimmed = message.trim().toLowerCase();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > 6) return false;
+  return (
+    /\bwhat about (them|those|these|it|that)\b/i.test(trimmed) ||
+    /\bhow about (them|those|these|it|that)\b/i.test(trimmed) ||
+    /\b(and|also) (them|those|these|it|that)\b/i.test(trimmed) ||
+    /\b(same|again|as before)\b/i.test(trimmed)
+  );
 }
 
-Execution model (critical):
-- You never connect to Postgres yourself. The backend runs your SELECT on a read-only server URL after automated validation.
-- Your job is to produce safe analytics SQL over the provided Northwind allowlist — not to troubleshoot the user’s infrastructure, credentials, or hosting. That is still true: you are not being asked to fix their servers.
-- For normal Northwind analytics questions, use kind=answer and include sql. Never refuse (and never apologize) claiming you cannot help with "database access", "technical issues", "connection problems", "security", or "troubleshooting" — those refusals are wrong here. The product executes your read-only SELECT after checks.
-- Do not say you cannot access the database, cannot run queries, or lack a connection — that is false in this product.
-- Use kind=refuse only for out-of-scope requests (non-business, destructive, not representable from the allowlisted schema), not for imaginary technical limits or policy confusion about analytics.
-
-Rules:
-- kind=clarify when more than one reasonable reading would materially change the SQL (scope, grain, metric, entity). Ask exactly one concrete clarify_question; keep assistant_message brief. Do not refuse solely because the prompt is vague.
-- For kind=clarify: put the single disambiguation question in clarify_question only, or only in assistant_message — never two paraphrased versions of the same question in both fields.
-- kind=refuse for destructive requests, non-business questions, or anything outside Northwind sales data — not because the question touches "databases" or "SQL" (those are the core product).
-- kind=answer when you either (a) answer with one safe SELECT using allowlisted tables, or (b) answer a meta / discovery question without needing data (see below) — in case (b) set sql to null.
-- sql must not contain a semicolon. No DML/DDL. Prefer explicit column lists over SELECT * when reasonable.
-- Use lowercase identifiers matching the schema. Dates in Northwind are mostly in the 1990s sample data.
-- When using metrics, set metric_ids to the ids you relied on.
-- If the user message includes "Focus for this turn" with join recipes, prefer those join paths over inventing new keys (especially ship_* vs territories).
-
-Ranking and words like "best" / "top" / "winner":
-- Here, those words mean objective ordering on a numeric field, not subjective opinion. Default "best" to highest value of the measure already in play (e.g. revenue, totals, counts) unless the user clearly asked for the opposite ("lowest", "worst performer", "cheapest").
-- If they just saw a ranked or tabular answer and ask who is the best / which is #1 / who wins, reuse the same grain, filters, and metric; return the top row (SQL pattern: ORDER BY that metric DESC, NULLS LAST, LIMIT 1) or a small top-N — do not refuse as subjective criteria.
-- In the assistant_message JSON field, state the rule in one short phrase (e.g. Treating best as highest revenue in this list.). Add the same to assumptions when helpful.
-
-Vague or underspecified prompts:
-- If the user omits a time range, geography, or segment, default to the full Northwind sample for that dimension (e.g. all order dates, all regions) when one clear SELECT still follows; list those defaults in assumptions.
-- If only one natural interpretation exists (e.g. "total orders" without filters), answer with kind=answer and state defaults in assumptions — do not over-clarify.
-- Phrases like "regional breakdown", "orders by region", "order count by region" already specify the dimension (region). Use kind=answer with SQL: default to sales region path orders → employees → employee_territories → territories → region, unless they clearly mean ship-to geography (then use orders.ship_region or ship_country). Never ask whether they meant region versus "another dimension" — that is unhelpful over-clarification.
-- If several interpretations are equally likely (e.g. "sales" could mean revenue, units, or order count by product vs by customer), use kind=clarify with one question that names the fork (pick one).
-- For follow-ups like "what about X", "same for Y", "and the suppliers?", inherit tables, filters, and time window from the last assistant answer unless the user overrides.
-- Referential follow-ups ("what about them", "how about those", "and them?", "same thing for…", "they" / "it" pointing back): resolve who or what the user means from the prior user + assistant turns — usually the entities or dimension just discussed. In assistant_message, state that link in one short phrase (e.g. Here for the same top customers we ranked by revenue.) so the answer is explicit. Prefer kind=answer with SQL that adds insight for those referents: a breakdown, comparison, trend slice, or next-level drill-down — not a vague restatement. Use kind=clarify only when several prior referents are equally plausible.
-- Relative dates ("this year", "last quarter") do not match the 1990s sample literally — either clarify that the dataset is historical demo data or answer on full sample and say so in assumptions.
-
-Meta and discovery questions (what can you do, what insights are available, how does this work):
-- These are in scope. Use kind=answer with sql set to null (no query yet). Write a short, welcoming assistant_message: you analyze the Northwind sales sample (orders, customers, products, suppliers, shippers, territories, etc.), run read-only SQL after safety checks, and explain results.
-- Include 4–6 concrete example prompts the user could paste next (e.g. revenue by category, top customers by order total, monthly order counts, freight by shipper, products low in stock). Do not refuse for lack of a "specific question" — you are the guide. For this pattern use kind=answer, sql null, and clarify_question null; weave any gentle nudge (e.g. pick revenue vs products) into assistant_message.
-
-Data-backed answers (kind=answer with non-null sql):
-- Reliability first: wrong numbers are worse than no numbers. Do NOT state specific totals, counts, currency amounts, or percentages in assistant_message — you have not seen query results yet. Describe what the query returns in plain language (e.g. "Revenue by category, highest first") and list assumptions; the app attaches real figures from the database after execution.
-- Never invent statistics. If the question cannot be answered without ambiguity, prefer kind=clarify.
-- In assistant_message, give findings and definitions only (no trailing "what next" question). The app will append a short row summary and then a suggested follow-up question tied to the query.
-
-Known metrics (prefer citing metric_ids when you use them):
-${metricsPromptBlock()}
-
-${buildColumnSemanticsHint()}
-
-Semantic layer: prefer the view \`datatalk_order_details_extended\` when you need order lines with product and category pre-joined — fewer join errors than wiring tables manually.
-
-Few-shot gold examples (use as patterns):
-${goldStandardExamplesBlock()}
-
-Allowlisted schema (tables and columns):
-${buildSchemaPromptExcerpt()}
-`;
+function buildIntentVerificationQuestion(turns: Turn[], latestMessage: string): string {
+  const trimmed = latestMessage.trim();
+  if (!trimmed) return latestMessage;
+  if (!isReferentialFollowUpMessage(trimmed)) return trimmed;
+  const recent = turns.slice(-4);
+  if (!recent.length) return trimmed;
+  const transcript = recent
+    .map((t) => {
+      const text = t.text.length > 320 ? `${t.text.slice(0, 320)}...` : t.text;
+      return `${t.role === "user" ? "User" : "Assistant"}: ${text}`;
+    })
+    .join("\n");
+  return `Conversation context (for resolving this short follow-up intent):
+${transcript}
+User: ${trimmed}`;
+}
 
 /** Trust penalty for join fan-out / grain issues — prefers AST from validateSelectSql when available. */
 function joinFanoutPenalty(sql: string | null | undefined, validated?: SqlValidationResult): boolean {
   if (!sql?.trim()) return false;
   if (validated?.ok) return validated.joinFanoutTrustPenalty;
   return inferJoinFanoutTrustPenalty(sql);
-}
-
-function parseLlmJson(raw: string): LlmPipelineResult {
-  const parsedJson = JSON.parse(raw) as unknown;
-  const parsed = llmPipelineSchema.safeParse(parsedJson);
-  if (!parsed.success) {
-    throw new Error(`Model JSON did not match the expected schema: ${parsed.error.message}`);
-  }
-  return parsed.data;
-}
-
-async function runModel(context: string): Promise<LlmPipelineResult> {
-  const raw = await chatCompletionJson([
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: context },
-  ]);
-  return parseLlmJson(raw);
-}
-
-async function repairSql(context: string, previousSql: string, errors: string[]): Promise<string> {
-  const raw = await chatCompletionJson([
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: `${context}\n\nThe previous SQL failed validation:\nSQL:\n${previousSql}\nErrors:\n- ${errors.join("\n- ")}\n\nReturn a NEW full JSON object with kind=answer and corrected sql only if you can fix it; otherwise kind=refuse with assistant_message explaining why.`,
-    },
-  ]);
-  const parsed = parseLlmJson(raw);
-  if (parsed.kind !== "answer" || !parsed.sql) {
-    throw new Error(parsed.assistant_message || "Could not repair SQL.");
-  }
-  return parsed.sql;
-}
-
-function repairFailureMessage(err: unknown): string {
-  return err instanceof Error ? err.message : "Could not repair SQL.";
 }
 
 export type OrchestratorResult = {
@@ -275,6 +211,7 @@ export async function runOrchestrator(input: {
     );
   }
   const context = buildConversationContext(input.turns, input.message, extraHints);
+  const intentQuestion = buildIntentVerificationQuestion(input.turns, input.message);
   let hadRepair = false;
 
   const model = await runModel(context);
@@ -328,12 +265,14 @@ export async function runOrchestrator(input: {
     }
   }
   const critiqueReplacedSql = sql !== sqlAfterLlm;
+  sql = enforceRequestedTopN(sql, input.message);
 
   let validation = validateSelectSql(sql);
   let failedValidationErrors = !validation.ok ? [...validation.errors] : [];
   if (!validation.ok) {
     try {
       sql = await repairSql(context, sql, validation.errors);
+      sql = enforceRequestedTopN(sql, input.message);
       hadRepair = true;
       validation = validateSelectSql(sql);
       failedValidationErrors = !validation.ok ? [...validation.errors] : failedValidationErrors;
@@ -377,7 +316,23 @@ export async function runOrchestrator(input: {
     };
   }
 
-  const validatedSql = validation.normalizedSql;
+  if (isVeryShortReferentialFollowUp(input.message) && input.lastSuccessfulDataSql?.trim()) {
+    const previousValidation = validateSelectSql(input.lastSuccessfulDataSql.trim());
+    if (previousValidation.ok && previousValidation.normalizedSql === validation.normalizedSql) {
+      const trust = buildTrustReport({ pipeline: "clarify" });
+      return {
+        assistant_message:
+          "I can continue from the same customers, but this follow-up is ambiguous and would just repeat the same result. Which comparison do you want next: by order date trend, by product/category split, or by country/region?",
+        kind: "clarify",
+        trust,
+        plan_summary: model.plan_summary,
+        clarify_question:
+          "Choose one: order date trend, product/category split, or country/region comparison for these same customers.",
+      };
+    }
+  }
+
+  let validatedSql = validation.normalizedSql;
   let explainValidated = false;
   let intentVerifierRan = false;
   let intentVerifierError = false;
@@ -385,31 +340,77 @@ export async function runOrchestrator(input: {
   let intentAligned: boolean | undefined;
 
   if (isExplainValidateEnabled()) {
-    const exRes = await explainValidateReadonlySelect(validatedSql);
+    let exRes = await explainValidateReadonlySelect(validatedSql);
     if (!exRes.ok) {
-      const trust = buildTrustReport({
-        pipeline: "execution_failed",
-        validationPassed: true,
-        validationDetails: [
-          "Parsed SQL and allowlist checks passed.",
-          `EXPLAIN dry-run failed: ${exRes.error}`,
-        ],
-        rowCount: 0,
-        limited: false,
-        executionMs: 0,
-        skippedExecution: true,
-        hadRepair,
-        joinHeuristic: joinFanoutPenalty(validatedSql, validation),
-      });
-      return {
-        assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${exRes.error}`,
-        kind: "answer",
-        sql: validatedSql,
-        trust,
-        plan_summary: model.plan_summary,
-        metric_ids: model.metric_ids,
-        assumptions: model.assumptions,
-      };
+      const firstExplainError = exRes.error;
+      try {
+        const repairedSql = await repairSqlForExplain({
+          context,
+          previousSql: validatedSql,
+          userMessage: input.message,
+          explainError: firstExplainError,
+        });
+        const repairedValidation = validateSelectSql(enforceRequestedTopN(repairedSql, input.message));
+        if (!repairedValidation.ok) {
+          throw new Error(repairedValidation.errors.join("; "));
+        }
+        validatedSql = repairedValidation.normalizedSql;
+        validation = repairedValidation;
+        sql = validatedSql;
+        hadRepair = true;
+        exRes = await explainValidateReadonlySelect(validatedSql);
+      } catch (err) {
+        const trust = buildTrustReport({
+          pipeline: "execution_failed",
+          validationPassed: true,
+          validationDetails: [
+            "Parsed SQL and allowlist checks passed.",
+            `EXPLAIN dry-run failed: ${firstExplainError}`,
+            `Automatic repair failed: ${repairFailureMessage(err)}`,
+          ],
+          rowCount: 0,
+          limited: false,
+          executionMs: 0,
+          skippedExecution: true,
+          hadRepair,
+          joinHeuristic: joinFanoutPenalty(validatedSql, validation),
+        });
+        return {
+          assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${firstExplainError}`,
+          kind: "answer",
+          sql: validatedSql,
+          trust,
+          plan_summary: model.plan_summary,
+          metric_ids: model.metric_ids,
+          assumptions: model.assumptions,
+        };
+      }
+      if (!exRes.ok) {
+        const trust = buildTrustReport({
+          pipeline: "execution_failed",
+          validationPassed: true,
+          validationDetails: [
+            "Parsed SQL and allowlist checks passed.",
+            `EXPLAIN dry-run failed: ${exRes.error}`,
+            "Automatic repair retried once but EXPLAIN still failed.",
+          ],
+          rowCount: 0,
+          limited: false,
+          executionMs: 0,
+          skippedExecution: true,
+          hadRepair,
+          joinHeuristic: joinFanoutPenalty(validatedSql, validation),
+        });
+        return {
+          assistant_message: `The query did not pass the database dry-run (EXPLAIN): ${exRes.error}`,
+          kind: "answer",
+          sql: validatedSql,
+          trust,
+          plan_summary: model.plan_summary,
+          metric_ids: model.metric_ids,
+          assumptions: model.assumptions,
+        };
+      }
     }
     explainValidated = true;
   }
@@ -417,7 +418,7 @@ export async function runOrchestrator(input: {
   if (isIntentVerifierEnabled()) {
     try {
       const iv = await verifySqlAgainstIntent({
-        userQuestion: input.message,
+        userQuestion: intentQuestion,
         sql: validatedSql,
       });
       if (iv == null) {
@@ -429,6 +430,51 @@ export async function runOrchestrator(input: {
         const threshold = getConfidenceRunThreshold();
         const shouldHold = iv.confidence_0_100 < threshold || iv.aligned === false;
         if (shouldHold) {
+          let recovered = false;
+          if (iv.mismatches.length > 0 || (iv.clarify_suggestion?.trim().length ?? 0) > 0) {
+            try {
+              const repairedSql = await repairSqlForIntent({
+                context,
+                previousSql: validatedSql,
+                userMessage: input.message,
+                confidence: iv.confidence_0_100,
+                mismatches: iv.mismatches,
+                clarifySuggestion: iv.clarify_suggestion,
+              });
+              const repairedValidation = validateSelectSql(enforceRequestedTopN(repairedSql, input.message));
+              if (repairedValidation.ok) {
+                if (isExplainValidateEnabled()) {
+                  const exRes = await explainValidateReadonlySelect(repairedValidation.normalizedSql);
+                  if (!exRes.ok) {
+                    throw new Error(exRes.error);
+                  }
+                  explainValidated = true;
+                }
+                const repairedIv = await verifySqlAgainstIntent({
+                  userQuestion: intentQuestion,
+                  sql: repairedValidation.normalizedSql,
+                });
+                if (
+                  repairedIv &&
+                  repairedIv.aligned !== false &&
+                  repairedIv.confidence_0_100 >= threshold
+                ) {
+                  validation = repairedValidation;
+                  sql = repairedValidation.normalizedSql;
+                  hadRepair = true;
+                  intentConfidence = repairedIv.confidence_0_100;
+                  intentAligned = repairedIv.aligned;
+                  recovered = true;
+                }
+              }
+            } catch {
+              /* fallback to clarify below */
+            }
+          }
+
+          if (recovered) {
+            // Continue to normal execution with the repaired SQL.
+          } else {
           const clarifyQ =
             iv.clarify_suggestion?.trim() ||
             `Which interpretation should we use? (Verification confidence ${iv.confidence_0_100}% is below the ${threshold}% run threshold.)`;
@@ -449,6 +495,7 @@ export async function runOrchestrator(input: {
             plan_summary: model.plan_summary,
             clarify_question: clarifyQ,
           };
+          }
         }
       }
     } catch {
@@ -585,14 +632,6 @@ export async function runOrchestrator(input: {
     emptyResultSet: exec.rowCount === 0 || undefined,
   });
 
-  const trustUpgradeSuggestion =
-    trust.level === "medium" &&
-    trust.pipeline === "data" &&
-    !input.strictVerification &&
-    narrativeGrounding.ok !== false
-      ? "Confidence is medium (e.g. joins, limits, or repairs). If you want a high-confidence pass, confirm below — we will re-run with strict verification (extra SQL review). When checks pass, trust can reach high."
-      : undefined;
-
   const reliabilityBanner = !narrativeGrounding.ok
     ? "**Reliability:** Some numbers in the text below may not match the database — **use the result summary and table as the source of truth.**\n\n"
     : "";
@@ -606,9 +645,10 @@ export async function runOrchestrator(input: {
     exec.rowCount === 0
       ? "**Note:** No rows matched. If you expected data, the filters may not match the Northwind sample (mostly 1996–1998) or category/region names may differ.\n\n"
       : "";
+  const trustSpecNudge = buildTrustSpecNudge(input.message);
 
   return {
-    assistant_message: `${executionFallbackNote}${reliabilityBanner}${planLine}${emptyRowsNote}${trimmedNarrative}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
+    assistant_message: `${executionFallbackNote}${reliabilityBanner}${planLine}${emptyRowsNote}${trimmedNarrative}${trustSpecNudge}\n\n${rowPreview}\n\n${sqlContextFollowUp(usedValidation.normalizedSql)}`,
     kind: "answer",
     sql: usedValidation.normalizedSql,
     rows: exec.rows,
@@ -616,7 +656,7 @@ export async function runOrchestrator(input: {
     plan_summary: model.plan_summary,
     metric_ids: model.metric_ids,
     assumptions: model.assumptions,
-    trustUpgradeSuggestion,
+    trustUpgradeSuggestion: undefined,
     resultHasMore: hasMore,
     resultNextOffset,
   };

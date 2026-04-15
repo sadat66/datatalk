@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { DashboardMetricsPicker } from "@/components/dashboard-metrics-picker";
 import { formatUsd, type DashboardDataset } from "@/lib/northwind/dashboard-data";
 
 function SparkLine({ values, className }: { values: number[]; className?: string }) {
@@ -79,27 +80,36 @@ function SparkBars({ values, className }: { values: number[]; className?: string
 
 function RevenueChart({
   rows,
-  focusYear,
-  compareYear,
 }: {
-  rows: { month: number; monthLabel: string; revenue: number; baselineRevenue: number }[];
-  focusYear: number;
-  compareYear: number;
+  rows: {
+    month: number;
+    monthLabel: string;
+    revenue: number;
+    baselineRevenue: number;
+    historyRevenue: number;
+  }[];
 }) {
-  const w = 280;
-  const h = 120;
-  const pad = 24;
-  const plotW = w - pad * 2;
-  const plotH = h - pad * 2;
+  const w = 320;
+  const h = 132;
+  const padL = 36;
+  const padR = 12;
+  const padT = 10;
+  const padB = 26;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const yBase = padT + plotH;
   const vals = rows.map((r) => r.revenue);
   const baseVals = rows.map((r) => r.baselineRevenue);
-  const max = Math.max(...vals, ...baseVals, 1);
+  const histVals = rows.map((r) => r.historyRevenue);
+  const max = Math.max(...vals, ...baseVals, ...histVals, 1);
+  const n = Math.max(rows.length, 1);
+  const xAt = (i: number) => padL + (i / Math.max(n - 1, 1)) * plotW;
 
   function line(series: number[]) {
     return series
       .map((v, i) => {
-        const x = pad + (i / Math.max(series.length - 1, 1)) * plotW;
-        const y = pad + plotH - (v / max) * plotH;
+        const x = xAt(i);
+        const y = padT + plotH - (v / max) * plotH;
         return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
       })
       .join(" ");
@@ -110,65 +120,47 @@ function RevenueChart({
   );
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-auto w-full max-w-full" role="img" aria-label="Revenue trends by month">
-      <line x1={pad} y1={pad + plotH} x2={pad + plotW} y2={pad + plotH} className="stroke-border" strokeWidth="1" />
-      <line x1={pad} y1={pad} x2={pad} y2={pad + plotH} className="stroke-border" strokeWidth="1" />
-      <path d={line(vals)} fill="none" stroke="var(--dt-teal)" strokeWidth="2.5" strokeLinecap="round" />
-      <path
-        d={line(baseVals)}
-        fill="none"
-        stroke="oklch(0.65 0.12 195)"
-        strokeWidth="2"
-        strokeDasharray="4 4"
-        strokeLinecap="round"
-      />
-      {monthTicks.map((i) => (
-        <text key={i} x={pad + (i / Math.max(rows.length - 1, 1)) * plotW - 8} y={h - 4} className="fill-muted-foreground text-[9px]">
-          {rows[i]?.monthLabel ?? ""}
-        </text>
-      ))}
-      <text x={pad + plotW - 4} y={pad + 10} className="fill-muted-foreground text-[9px]">
-        {focusYear} vs {compareYear}
-      </text>
-    </svg>
-  );
-}
-
-function ProductsChart({ rows }: { rows: { productName: string; units: number }[] }) {
-  const max = Math.max(...rows.map((r) => r.units), 1);
-  const labelW = 108;
-  const barH = 14;
-  const gap = 10;
-  const chartW = 320;
-  const chartH = Math.max(8 + rows.length * (barH + gap), 40);
-
-  return (
-    <svg
-      viewBox={`0 0 ${chartW} ${chartH}`}
-      className="h-auto w-full max-w-full"
-      role="img"
-      aria-label="Top products by volume"
-    >
-      {rows.map((r, i) => {
-        const y = 8 + i * (barH + gap);
-        const bw = (r.units / max) * (chartW - labelW - 40);
-        return (
-          <g key={r.productName}>
-            <text x={0} y={y + barH - 2} className="fill-muted-foreground text-[10px]">
-              {r.productName.length > 18 ? `${r.productName.slice(0, 16)}…` : r.productName}
-            </text>
-            <rect x={labelW} y={y} width={bw} height={barH} rx="4" className="fill-[var(--dt-teal)]/85" />
-            <text
-              x={labelW + bw + 6}
-              y={y + barH - 2}
-              className="fill-muted-foreground text-[10px] tabular-nums"
-            >
-              {r.units.toLocaleString()}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
+    <div className="w-full min-w-0">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="block h-auto w-full max-w-full"
+        role="img"
+        aria-label="Revenue trends by month"
+      >
+        <line x1={padL} y1={yBase} x2={padL + plotW} y2={yBase} className="stroke-border" strokeWidth="1" />
+        <line x1={padL} y1={padT} x2={padL} y2={yBase} className="stroke-border" strokeWidth="1" />
+        <path d={line(vals)} fill="none" stroke="var(--dt-teal)" strokeWidth="2.5" strokeLinecap="round" />
+        <path
+          d={line(baseVals)}
+          fill="none"
+          stroke="oklch(0.65 0.12 195)"
+          strokeWidth="2"
+          strokeDasharray="4 4"
+          strokeLinecap="round"
+        />
+        <path
+          d={line(histVals)}
+          fill="none"
+          stroke="oklch(0.65 0.12 280)"
+          strokeWidth="1.75"
+          strokeDasharray="2 3"
+          strokeLinecap="round"
+        />
+        {monthTicks.map((i) => (
+          <text
+            key={i}
+            x={xAt(i)}
+            y={h - 8}
+            textAnchor="middle"
+            className="fill-muted-foreground"
+            style={{ fontSize: 9 }}
+          >
+            {rows[i]?.monthLabel ?? ""}
+          </text>
+        ))}
+      </svg>
+    </div>
   );
 }
 
@@ -187,7 +179,7 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
   if (!data.ok) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Dashboard</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h1>
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
           <p className="font-medium">Live metrics unavailable</p>
           <p className="mt-1 text-pretty text-muted-foreground dark:text-amber-200/90">{data.error}</p>
@@ -196,9 +188,17 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
     );
   }
 
-  const { focusYear, compareYear, kpis, revenueByMonth, topProducts, lateOrders, unfinishedOrders, anomalyCount } =
-    data;
-
+  const {
+    focusYear,
+    compareYear,
+    historyYear,
+    kpis,
+    revenueByMonth,
+    lateOrders,
+    unfinishedOrders,
+    anomalyCount,
+    anomalyExplanation,
+  } = data;
   const kpiCards = [
     {
       title: "Total revenue",
@@ -233,16 +233,21 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Dashboard</h1>
-        <Badge
-          variant="secondary"
-          className="rounded-full border border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-900/50 dark:bg-orange-950/40 dark:text-orange-300"
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h1>
+        <span
+          title={anomalyExplanation}
+          className="inline-flex cursor-help rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {anomalyCount} {anomalyCount === 1 ? "anomaly" : "anomalies"}
-        </Badge>
+          <Badge
+            variant="secondary"
+            className="pointer-events-none rounded-full border border-orange-200/90 bg-orange-50 text-orange-800 dark:border-orange-900/50 dark:bg-orange-950/50 dark:text-orange-200"
+          >
+            {anomalyCount} {anomalyCount === 1 ? "open / late order" : "open / late orders"}
+          </Badge>
+        </span>
         <span className="text-xs text-muted-foreground">
-          Northwind · FY {focusYear}
-          {focusYear > compareYear ? ` (vs ${compareYear})` : ""}
+          Northwind sample · FY {focusYear}
+          {focusYear > compareYear ? ` · vs ${compareYear}` : ""}
         </span>
       </div>
 
@@ -278,41 +283,39 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
         ))}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.22fr)] lg:items-start">
         <Card className="border-border/80 shadow-sm">
           <CardHeader>
             <CardTitle className="text-base">Revenue trends by month</CardTitle>
             <CardDescription>
-              Line revenue in {focusYear} vs {compareYear} (same calendar months)
+              Line revenue by calendar month: {focusYear}, {compareYear}, and {historyYear}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="mb-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-[var(--dt-teal)]" />
-                {focusYear}
+            <div
+              className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground"
+              aria-label={`Legend: ${focusYear} solid, ${compareYear} dashed, ${historyYear} dotted`}
+            >
+              <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                <span className="size-2 shrink-0 rounded-full bg-[var(--dt-teal)]" aria-hidden />
+                <span className="tabular-nums">{focusYear}</span>
               </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-[var(--dt-teal)]/40" />
-                {compareYear}
+              <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                <span className="size-2 shrink-0 rounded-full bg-[var(--dt-teal)]/40" aria-hidden />
+                <span className="tabular-nums">{compareYear}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                <span
+                  className="size-2 shrink-0 rounded-full border border-dashed border-violet-400/90 bg-violet-500/25"
+                  aria-hidden
+                />
+                <span className="tabular-nums">{historyYear}</span>
               </span>
             </div>
-            <RevenueChart rows={revenueByMonth} focusYear={focusYear} compareYear={compareYear} />
+            <RevenueChart rows={revenueByMonth} />
           </CardContent>
         </Card>
-        <Card className="border-border/80 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base">Top products by volume</CardTitle>
-            <CardDescription>Units sold in {focusYear}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {topProducts.length ? (
-              <ProductsChart rows={topProducts} />
-            ) : (
-              <p className="text-sm text-muted-foreground">No product sales in this period.</p>
-            )}
-          </CardContent>
-        </Card>
+        <DashboardMetricsPicker />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

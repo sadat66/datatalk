@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import postgres from "postgres";
 
 import { getReadonlyDatabaseUrl } from "@/lib/datatalk/executor";
@@ -24,11 +25,21 @@ export type DashboardDataset =
         shippedSpark: number[];
         customersSpark: number[];
       };
-      revenueByMonth: { month: number; monthLabel: string; revenue: number; baselineRevenue: number }[];
-      topProducts: { productName: string; units: number }[];
+      revenueByMonth: {
+        month: number;
+        monthLabel: string;
+        revenue: number;
+        baselineRevenue: number;
+        /** Line revenue for `historyYear` (same month alignment). */
+        historyRevenue: number;
+      }[];
+      /** Prior-prior calendar year (e.g. 1996 when comparing 1998 vs 1997). */
+      historyYear: number;
       lateOrders: { orderId: number; customer: string; shipper: string; daysLate: number; value: number }[];
       unfinishedOrders: { orderId: number; customer: string; status: "Open" | "Late"; value: number }[];
       anomalyCount: number;
+      /** Human-readable definition of what increments `anomalyCount` (for tooltips). */
+      anomalyExplanation: string;
     }
   | { ok: false; error: string };
 
@@ -48,8 +59,7 @@ function sparkFromMonthly(values: number[], take = 12): number[] {
   return slice.map((v) => Math.round((v / max) * 100) / 100);
 }
 
-/** Loads Northwind aggregates for the dashboard (read-only SQL, server-only). */
-export async function getDashboardDataset(): Promise<DashboardDataset> {
+async function loadDashboardDatasetFromDb(): Promise<DashboardDataset> {
   const url = getReadonlyDatabaseUrl();
   if (!url) {
     return {
@@ -168,6 +178,20 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
       order by 1
     `;
 
+    const historyYear = compareYear - 1;
+    const monthlyHistory = await sql<{ m: number; revenue: string }[]>`
+      select extract(month from o.order_date)::int as m,
+        coalesce(sum(
+          od.unit_price::double precision * od.quantity::double precision * (1 - coalesce(od.discount, 0)::double precision)
+        ), 0)::text as revenue
+      from order_details od
+      join orders o on o.order_id = od.order_id
+      where o.order_date is not null
+        and extract(year from o.order_date) = ${historyYear}
+      group by 1
+      order by 1
+    `;
+
     const monthlyOrderCounts = await sql<{ m: number; c: string }[]>`
       select extract(month from order_date)::int as m, count(*)::text as c
       from orders
@@ -233,6 +257,7 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
 
     const revByMonthMap = new Map(monthlyFocus.map((r) => [r.m, Number(r.revenue)]));
     const baseByMonthMap = new Map(monthlyCompare.map((r) => [r.m, Number(r.revenue)]));
+    const historyByMonthMap = new Map(monthlyHistory.map((r) => [r.m, Number(r.revenue)]));
     const ordersByMonthMap = new Map(monthlyOrderCounts.map((r) => [r.m, Number(r.c)]));
     const shippedByMonthMap = new Map(monthlyShippedCounts.map((r) => [r.m, Number(r.c)]));
     const newCustByMonthMap = new Map(monthlyNewCustomerCounts.map((r) => [r.m, Number(r.c)]));
@@ -242,6 +267,7 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
       monthLabel: string;
       revenue: number;
       baselineRevenue: number;
+      historyRevenue: number;
     }[] = [];
     for (let m = 1; m <= 12; m += 1) {
       revenueByMonth.push({
@@ -249,6 +275,7 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
         monthLabel: monthLabel(m),
         revenue: revByMonthMap.get(m) ?? 0,
         baselineRevenue: baseByMonthMap.get(m) ?? 0,
+        historyRevenue: historyByMonthMap.get(m) ?? 0,
       });
     }
 
@@ -260,19 +287,6 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
     });
     const monthlyShippedSeries = Array.from({ length: 12 }, (_, i) => shippedByMonthMap.get(i + 1) ?? 0);
     const monthlyNewCustSeries = Array.from({ length: 12 }, (_, i) => newCustByMonthMap.get(i + 1) ?? 0);
-
-    const topProducts = await sql<{ product_name: string; units: string }[]>`
-      select p.product_name,
-        coalesce(sum(od.quantity::bigint), 0)::text as units
-      from order_details od
-      join products p on p.product_id = od.product_id
-      join orders o on o.order_id = od.order_id
-      where o.order_date is not null
-        and extract(year from o.order_date) = ${focusYear}
-      group by p.product_id, p.product_name
-      order by sum(od.quantity) desc
-      limit 5
-    `;
 
     const lateOrdersRaw = await sql<{
       order_id: number;
@@ -339,6 +353,7 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
         )
     `;
     const anomalyCount = Number(anomalyRow[0]?.c ?? 0);
+    const anomalyExplanation = `Orders in ${focusYear} (year from ship date when present, otherwise order date) that are still open (not shipped) or were shipped after the required date.`;
 
     return {
       ok: true,
@@ -359,10 +374,7 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
         customersSpark: sparkFromMonthly(monthlyNewCustSeries.length ? monthlyNewCustSeries : monthlyRevenueSeries),
       },
       revenueByMonth,
-      topProducts: topProducts.map((r) => ({
-        productName: r.product_name,
-        units: Number(r.units),
-      })),
+      historyYear,
       lateOrders: lateOrdersRaw.map((r) => ({
         orderId: r.order_id,
         customer: r.company_name ?? "—",
@@ -377,6 +389,7 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
         value: Number(r.order_value),
       })),
       anomalyCount,
+      anomalyExplanation,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -384,6 +397,23 @@ export async function getDashboardDataset(): Promise<DashboardDataset> {
   } finally {
     await sql.end({ timeout: 2 }).catch(() => undefined);
   }
+}
+
+const getCachedDashboardDataset = unstable_cache(loadDashboardDatasetFromDb, ["northwind-dashboard-dataset-v3"], {
+  revalidate: 120,
+});
+
+/** Loads Northwind aggregates for the dashboard (read-only SQL, server-only). Result is cached briefly to limit database load on repeated navigations. */
+export async function getDashboardDataset(): Promise<DashboardDataset> {
+  const url = getReadonlyDatabaseUrl();
+  if (!url) {
+    return {
+      ok: false,
+      error:
+        "No database URL. Set DATABASE_URL_READONLY, DATABASE_TRANSACTION_URL, or DIRECT_DATABASE_URL in your environment.",
+    };
+  }
+  return getCachedDashboardDataset();
 }
 
 export function formatUsd(amount: number): string {

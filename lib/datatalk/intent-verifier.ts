@@ -17,6 +17,14 @@ const SYSTEM = `You are a verification model for a Northwind PostgreSQL analytic
 The user asked a question in English; another model proposed a SELECT. Your job is self-reflection / double-check:
 - Does this SQL accurately reflect the user's intent?
 - Flag wrong grain (e.g. duplicate rows from bad joins), wrong filters (year vs full date), wrong dimension (ship_region vs sales territory path), or invented identifiers.
+- Treat this as an analytics-only product. For short follow-ups like "add/include customer" or "split by shipper", interpret "add/include" as adding a breakdown/filter/context to the prior analytics query, not as INSERT/CRUD.
+ - Tie handling on extrema:
+   - For prompts asking highest/lowest/min/max entities, assume all ties should be returned unless the user explicitly asked for one row (top 1, single, #1, just one).
+   - If SQL uses ORDER BY on the extrema metric with LIMIT 1 but user did not request one row, treat that as a mismatch (possible tie truncation) and lower confidence.
+ - For discount-comparative wording:
+   - "least/lowest discount" means minimum discount value in the scoped rows.
+   - Treat SQL using MIN(discount) as semantically valid when it correctly identifies/filter products at the minimum discount level.
+   - Do not flag a mismatch just because SQL computes MIN(discount); flag only when the SQL clearly fails to constrain to the minimum-discount cohort despite that being requested.
 Be conservative: if you are unsure, lower confidence and suggest clarification.
 Return a single JSON object only:
 {
@@ -29,9 +37,11 @@ Return a single JSON object only:
 
 export function getConfidenceRunThreshold(): number {
   const raw = process.env.DATATALK_CONFIDENCE_RUN_THRESHOLD?.trim();
-  if (!raw) return 85;
+  // 85 proved too strict for clear first-turn analytics prompts and caused unnecessary
+  // "intent test" holds. Keep strict mode configurable via env, but use a saner default.
+  if (!raw) return 75;
   const n = Number(raw);
-  if (!Number.isFinite(n)) return 85;
+  if (!Number.isFinite(n)) return 75;
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 

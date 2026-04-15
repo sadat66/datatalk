@@ -1,79 +1,34 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import Link from "next/link";
 import {
   ExternalLinkIcon,
-  FileDownIcon,
   Loader2Icon,
   MicIcon,
   SquareIcon,
   Trash2Icon,
-  Volume2Icon,
 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import { ChatMessageBubble } from "@/components/chat/chat-message-bubble";
+import { parseSseEvents } from "@/components/chat/sse";
+import type { ChatResponse, Conversation, MessageRow } from "@/components/chat/types";
+import type { ConversationsPanelPayload } from "@/lib/conversations/panel-data";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import type { TrustPipeline, TrustReport } from "@/lib/datatalk/types";
-import { buildTrustReasoningSections, trustReasoningToneClass } from "@/lib/datatalk/trust-reasoning";
-
-const PIPELINE_LABEL: Record<TrustPipeline, string> = {
-  data: "Data-backed",
-  conversational: "Informational",
-  clarify: "Clarification",
-  refused: "Declined",
-  validation_failed: "SQL failed checks",
-  execution_failed: "Run failed",
-  canned: "Preset reply",
-};
 import { downloadResultTablePdf } from "@/lib/export-result-table-pdf";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { cn } from "@/lib/utils";
-
-type Conversation = { id: string; title: string | null; created_at: string };
-type MessageRow = {
-  id: string;
-  role: string;
-  content: Record<string, unknown>;
-  created_at: string;
-};
-
-type ChatResponse = {
-  conversationId: string;
-  kind: string;
-  assistant_message: string;
-  sql?: string;
-  rows?: Record<string, unknown>[];
-  trust: TrustReport;
-  plan_summary?: string | null;
-  metric_ids?: string[];
-  assumptions?: string[];
-  trust_upgrade_suggestion?: string;
-  result_has_more?: boolean;
-  result_next_offset?: number | null;
-};
-
-type ParsedSseEvent = {
-  event: string;
-  data: string;
-};
 
 type BrowserSpeechRecognition = {
   lang: string;
@@ -98,358 +53,60 @@ function resolveBrowserSpeechCtor(): BrowserSpeechRecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
-function messageText(role: string, content: Record<string, unknown>): string {
-  if (role === "user" && content.type === "user" && typeof content.text === "string") {
-    return content.text;
-  }
-  if (role === "assistant" && content.type === "assistant" && typeof content.text === "string") {
-    return content.text;
-  }
-  return "";
+function subscribeNoop() {
+  return () => {};
 }
 
-function ResultTable({ rows }: { rows: Record<string, unknown>[] }) {
-  const columns = useMemo(() => {
-    if (!rows.length) return [];
-    return Object.keys(rows[0]);
-  }, [rows]);
-
-  if (!rows.length) return null;
-
-  return (
-    <div className="mt-3 overflow-x-auto rounded-md border border-border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            {columns.map((c) => (
-              <TableHead key={c} className="whitespace-nowrap">
-                {c}
-              </TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.slice(0, 50).map((row, i) => (
-            <TableRow key={i}>
-              {columns.map((c) => (
-                <TableCell key={c} className="max-w-[240px] truncate text-xs">
-                  {formatCell(row[c])}
-                </TableCell>
-              ))}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+function useBrowserSpeechSupported(): boolean {
+  return useSyncExternalStore(
+    subscribeNoop,
+    () => Boolean(resolveBrowserSpeechCtor()),
+    () => false,
   );
 }
 
-function formatCell(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
-}
-
-function parseSseEvents(buffer: string): { events: ParsedSseEvent[]; rest: string } {
-  const chunks = buffer.split("\n\n");
-  const rest = chunks.pop() ?? "";
-  const events: ParsedSseEvent[] = [];
-
-  for (const chunk of chunks) {
-    const lines = chunk.split("\n");
-    let event = "message";
-    const dataLines: string[] = [];
-
-    for (const rawLine of lines) {
-      const line = rawLine.trimEnd();
-      if (!line) continue;
-      if (line.startsWith("event:")) {
-        event = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trimStart());
-      }
-    }
-
-    events.push({ event, data: dataLines.join("\n") });
-  }
-
-  return { events, rest };
-}
-
-function TrustBlock({
-  trust,
-  sql,
-  planSummary,
-}: {
-  trust: TrustReport;
-  sql?: string;
-  planSummary?: string | null;
-}) {
-  const reasoningSections = buildTrustReasoningSections(trust);
-  return (
-    <Collapsible className="mt-2 rounded-md border border-border bg-muted/40">
-      <CollapsibleTrigger
-        type="button"
-        className={cn(
-          buttonVariants({ variant: "ghost", size: "sm" }),
-          "flex h-auto w-full items-center justify-between gap-2 whitespace-normal px-3 py-2 text-left",
-        )}
-      >
-        <div className="min-w-0 flex-1">
-          <span className="text-xs font-medium">Why this answer? — trust and reasoning</span>
-          <p className="mt-0.5 text-[11px] font-normal text-muted-foreground">
-            Validation · confidence · graceful failure · hallucination checks
-          </p>
-        </div>
-        <Badge variant="outline" className="shrink-0 text-[10px] uppercase">
-          {trust.pipeline
-            ? `${PIPELINE_LABEL[trust.pipeline]} · ${trust.level} trust`
-            : `${trust.level} trust`}
-        </Badge>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-3 px-3 pb-3 pt-0">
-        <div className="space-y-2">
-          {reasoningSections.map((s) => (
-            <div
-              key={s.id}
-              className={cn(
-                "rounded-md border px-2.5 py-2 text-xs leading-snug",
-                trustReasoningToneClass(s.tone),
-              )}
-            >
-              <p className="font-medium text-foreground">{s.title}</p>
-              {s.bullets && s.bullets.length > 0 ? (
-                <ul className="mt-1.5 list-inside list-disc space-y-1 text-muted-foreground">
-                  {s.bullets.map((b, i) => (
-                    <li key={i}>{b}</li>
-                  ))}
-                </ul>
-              ) : s.body ? (
-                <p className="mt-1 text-muted-foreground">{s.body}</p>
-              ) : null}
-            </div>
-          ))}
-        </div>
-        {planSummary ? (
-          <p className="text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">Plan: </span>
-            {planSummary}
-          </p>
-        ) : null}
-        <div>
-          <p className="text-[11px] font-medium text-foreground">Additional pipeline signals</p>
-          <ul className="mt-1 list-inside list-disc text-xs text-muted-foreground">
-            {trust.reasons.map((r, i) => (
-              <li key={i}>{r}</li>
-            ))}
-          </ul>
-        </div>
-        {sql ? (
-          <div>
-            <p className="text-[11px] font-medium text-foreground">Validated SQL</p>
-            <pre className="mt-1 max-h-40 overflow-auto rounded border border-border bg-background p-2 text-[11px] leading-snug text-foreground">
-              {sql}
-            </pre>
-          </div>
-        ) : null}
-      </CollapsibleContent>
-    </Collapsible>
+function useTtsSupported(): boolean {
+  return useSyncExternalStore(
+    subscribeNoop,
+    () => typeof window !== "undefined" && "speechSynthesis" in window,
+    () => false,
   );
 }
-
-const ChatMessageBubble = memo(
-  function ChatMessageBubble({
-    message: m,
-    isStreamingAssistant,
-    ttsSupported,
-    isSpeaking,
-    onSpeak,
-    onRequestStrictVerification,
-    onNextPage,
-    onDownloadTablePdf,
-    pdfExportBusy,
-  }: {
-    message: MessageRow;
-    isStreamingAssistant: boolean;
-    ttsSupported: boolean;
-    isSpeaking: boolean;
-    onSpeak: (messageId: string, text: string) => void;
-    onRequestStrictVerification?: () => void;
-    onNextPage?: (nextOffset: number) => void;
-    onDownloadTablePdf?: (sql: string, caption: string) => Promise<void>;
-    pdfExportBusy?: boolean;
-  }) {
-    const text = messageText(m.role, m.content);
-    const trust = m.content.trust as TrustReport | undefined;
-    const sql = typeof m.content.sql === "string" ? m.content.sql : undefined;
-    const rows = Array.isArray(m.content.rows)
-      ? (m.content.rows as Record<string, unknown>[])
-      : undefined;
-    const plan = typeof m.content.plan_summary === "string" ? m.content.plan_summary : null;
-    const trustUpgradeSuggestion =
-      typeof m.content.trust_upgrade_suggestion === "string"
-        ? m.content.trust_upgrade_suggestion
-        : undefined;
-    const resultHasMore = m.content.result_has_more === true;
-    const resultNextOffset =
-      typeof m.content.result_next_offset === "number" ? m.content.result_next_offset : null;
-    const isUser = m.role === "user";
-    const showThinkingPulse =
-      !isUser &&
-      isStreamingAssistant &&
-      (text === "Thinking…" || text === "Finalizing answer…");
-
-    return (
-      <div
-        className={cn(
-          "flex gap-2",
-          isUser ? "justify-end" : "justify-start",
-          "motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200 motion-safe:slide-in-from-bottom-1",
-        )}
-      >
-        <div
-          className={cn(
-            "max-w-[min(92%,42rem)] rounded-2xl px-4 py-3 text-[15px] leading-relaxed tracking-[-0.01em] transition-[box-shadow,transform] duration-200",
-            isUser
-              ? "rounded-br-md bg-[var(--dt-teal)] text-white shadow-sm shadow-black/10"
-              : "rounded-bl-md border border-border/60 bg-gradient-to-b from-card to-muted/20 text-card-foreground shadow-sm shadow-black/[0.04]",
-          )}
-        >
-          <div className="flex items-end gap-0.5">
-            <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">
-              {showThinkingPulse ? (
-                <span className="inline-flex items-center gap-2 text-muted-foreground">
-                  <Loader2Icon className="size-3.5 animate-spin opacity-70" />
-                  <span>{text}</span>
-                </span>
-              ) : (
-                text
-              )}
-            </p>
-            {isStreamingAssistant && !showThinkingPulse ? (
-              <span
-                className="mb-0.5 inline-block h-4 w-px shrink-0 animate-pulse bg-[var(--dt-teal)]/80"
-                aria-hidden
-              />
-            ) : null}
-          </div>
-          {!isUser && ttsSupported && !isStreamingAssistant ? (
-            <div className="mt-2 flex justify-end border-t border-border/50 pt-2">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 text-muted-foreground hover:text-foreground"
-                onClick={() => onSpeak(m.id, text)}
-              >
-                {isSpeaking ? (
-                  <>
-                    <SquareIcon className="size-4" />
-                    Stop audio
-                  </>
-                ) : (
-                  <>
-                    <Volume2Icon className="size-4" />
-                    Speak
-                  </>
-                )}
-              </Button>
-            </div>
-          ) : null}
-          {!isUser && trust && !isStreamingAssistant ? (
-            <TrustBlock trust={trust} sql={sql} planSummary={plan} />
-          ) : null}
-          {!isUser && rows?.length && !isStreamingAssistant ? <ResultTable rows={rows} /> : null}
-          {!isUser &&
-          resultHasMore &&
-          resultNextOffset != null &&
-          onNextPage &&
-          !isStreamingAssistant ? (
-            <div className="mt-2 flex justify-end">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => onNextPage(resultNextOffset)}
-              >
-                Next 15 rows
-              </Button>
-            </div>
-          ) : null}
-          {!isUser && trustUpgradeSuggestion && onRequestStrictVerification && !isStreamingAssistant ? (
-            <div className="mt-3 rounded-lg border border-[var(--dt-teal)]/30 bg-[var(--dt-teal)]/5 px-3 py-2 text-xs leading-relaxed text-foreground">
-              <p className="text-muted-foreground">{trustUpgradeSuggestion}</p>
-              <Button
-                type="button"
-                size="sm"
-                className="mt-2 bg-[var(--dt-teal)] text-white hover:bg-[var(--dt-teal)]/90"
-                onClick={onRequestStrictVerification}
-              >
-                Confirm strict verification
-              </Button>
-            </div>
-          ) : null}
-          {!isUser &&
-          rows?.length &&
-          sql &&
-          !isStreamingAssistant &&
-          (trust == null || trust.execution?.skipped !== true) ? (
-            <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs"
-                disabled={pdfExportBusy || !onDownloadTablePdf}
-                onClick={() => {
-                  if (!sql || !onDownloadTablePdf) return;
-                  void onDownloadTablePdf(sql, text.trim().slice(0, 280));
-                }}
-              >
-                <FileDownIcon className="size-3.5" />
-                {pdfExportBusy ? "Preparing PDF…" : "Download table (PDF)"}
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    );
-  },
-  (prev, next) =>
-    prev.message === next.message &&
-    prev.isStreamingAssistant === next.isStreamingAssistant &&
-    prev.ttsSupported === next.ttsSupported &&
-    prev.isSpeaking === next.isSpeaking &&
-    prev.onSpeak === next.onSpeak &&
-    prev.onRequestStrictVerification === next.onRequestStrictVerification &&
-    prev.onNextPage === next.onNextPage &&
-    prev.onDownloadTablePdf === next.onDownloadTablePdf &&
-    prev.pdfExportBusy === next.pdfExportBusy,
-);
 
 type ChatPanelProps = {
   /** Right-rail layout for the dashboard (no left conversation column). */
   variant?: "default" | "embedded" | "page";
   /** When set, selects this thread on mount (e.g. `/dashboard/chat/[id]`). */
   initialConversationId?: string | null;
+  /** When provided (e.g. from SSR), skips the initial client fetch to `/api/conversations`. */
+  initialPanelData?: ConversationsPanelPayload;
 };
 
-export function ChatPanel({ variant = "default", initialConversationId = null }: ChatPanelProps) {
+export function ChatPanel({
+  variant = "default",
+  initialConversationId = null,
+  initialPanelData,
+}: ChatPanelProps) {
   const embedded = variant === "embedded";
   const pageVariant = variant === "page";
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<MessageRow[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>(
+    () => initialPanelData?.conversations ?? [],
+  );
+  const [conversationId, setConversationId] = useState<string | null>(() => initialConversationId ?? null);
+  const [messages, setMessages] = useState<MessageRow[]>(() => initialPanelData?.messages ?? []);
   const [draft, setDraft] = useState("");
-  const [loadingList, setLoadingList] = useState(true);
-  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingList, setLoadingList] = useState(() => initialPanelData === undefined);
+  const [loadingMessages, setLoadingMessages] = useState(() => {
+    if (initialPanelData === undefined) return true;
+    if (initialConversationId && initialPanelData.messages === undefined) return true;
+    return false;
+  });
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [browserSpeechSupported, setBrowserSpeechSupported] = useState(false);
-  const [ttsSupported, setTtsSupported] = useState(false);
+  const browserSpeechSupported = useBrowserSpeechSupported();
+  const ttsSupported = useTtsSupported();
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
@@ -583,17 +240,19 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
   }, []);
 
   useEffect(() => {
+    if (initialPanelData !== undefined) {
+      isCreatingConversationRef.current = false;
+      if (initialConversationId) {
+        setConversationId(initialConversationId);
+      }
+      return;
+    }
     isCreatingConversationRef.current = false;
     if (initialConversationId) {
       setConversationId(initialConversationId);
     }
     void refreshConversationPanel(initialConversationId ?? null);
-  }, [initialConversationId, refreshConversationPanel]);
-
-  useEffect(() => {
-    setBrowserSpeechSupported(Boolean(resolveBrowserSpeechCtor()));
-    setTtsSupported(typeof window !== "undefined" && "speechSynthesis" in window);
-  }, []);
+  }, [initialPanelData, initialConversationId, refreshConversationPanel]);
 
   useEffect(() => {
     return () => {
@@ -610,15 +269,12 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
     messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [loadingMessages, conversationId, messages.length]);
 
-  useEffect(() => {
-    speakingMessageIdRef.current = speakingMessageId;
-  }, [speakingMessageId]);
-
   const toggleSpeak = useCallback((messageId: string, text: string) => {
     if (!ttsSupported || typeof window === "undefined" || !text.trim()) return;
     const synth = window.speechSynthesis;
     if (speakingMessageIdRef.current === messageId) {
       synth.cancel();
+      speakingMessageIdRef.current = null;
       setSpeakingMessageId(null);
       return;
     }
@@ -627,11 +283,16 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1;
     utterance.pitch = 1;
-    utterance.onend = () => setSpeakingMessageId(null);
+    utterance.onend = () => {
+      speakingMessageIdRef.current = null;
+      setSpeakingMessageId(null);
+    };
     utterance.onerror = () => {
+      speakingMessageIdRef.current = null;
       setSpeakingMessageId(null);
       setError("Text-to-speech failed in this browser.");
     };
+    speakingMessageIdRef.current = messageId;
     setSpeakingMessageId(messageId);
     synth.speak(utterance);
   }, [ttsSupported]);
@@ -1052,7 +713,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
       className={
         embedded
           ? "flex h-full min-h-0 flex-1 flex-col"
-          : "grid min-h-0 flex-1 gap-6 lg:grid-cols-[220px_1fr]"
+          : "grid min-h-0 flex-1 grid-rows-1 gap-6 lg:grid-cols-[220px_1fr]"
       }
     >
       {!embedded ? (
@@ -1069,23 +730,21 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
         className={
           embedded
             ? "flex min-h-0 flex-1 flex-col rounded-none border-0 border-l border-border bg-card shadow-none"
-            : pageVariant
-              ? "flex min-h-[min(720px,calc(100vh-11rem))] flex-1 flex-col border-border"
-              : "flex min-h-[520px] flex-col border-border"
+            : "flex min-h-0 h-full min-w-0 flex-1 flex-col border-border"
         }
       >
         <CardHeader className={embedded ? "border-b border-border pb-3 pt-4" : "border-b border-border pb-4"}>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <CardTitle className={embedded ? "text-base" : "text-lg"}>
-                {embedded ? "DataTalk Agent" : pageVariant ? "Chat" : "Ask DataTalk"}
+                {embedded ? "DataTalk" : pageVariant ? "Conversation" : "DataTalk"}
               </CardTitle>
               <CardDescription className={embedded ? "text-xs" : ""}>
                 {embedded
-                  ? "Ask natural-language questions about your warehouse."
+                  ? "Natural language → validated SQL on the Northwind sample database."
                   : pageVariant
-                    ? "Full-page view of this conversation."
-                    : "Questions run through validation and a read-only database connection when configured."}
+                    ? "Same thread as in the workspace; use the full height for longer answers."
+                    : "Questions are validated and run against the read-only database when it is configured."}
               </CardDescription>
             </div>
             {!pageVariant && conversationId ? (
@@ -1107,7 +766,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
           </div>
           {embedded ? (
             <div className="mt-3 space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">Your chats</p>
+              <p className="text-xs font-medium text-muted-foreground">Threads</p>
               {conversationList}
             </div>
           ) : null}
@@ -1125,8 +784,8 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
           ) : null}
           <ScrollArea
             className={cn(
-              "min-h-[280px] flex-1 rounded-md border border-border bg-muted/20 p-3",
-              (embedded || pageVariant) && "min-h-0",
+              "min-h-[min(200px,28dvh)] flex-1 rounded-md border border-border bg-muted/20 p-3 sm:min-h-[min(260px,38dvh)]",
+              (embedded || pageVariant) && "min-h-0 sm:min-h-0",
             )}
           >
             {loadingMessages ? (
@@ -1152,9 +811,10 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
                 ))}
                 <div ref={messagesEndRef} className="h-px shrink-0" aria-hidden />
                 {!messages.length ? (
-                  <p className="text-sm text-muted-foreground">
-                    Ask something like: “Top 5 customers by line revenue in 1997.” (Requires LLM and
-                    read-only DB env vars.)
+                  <p className="text-pretty text-sm text-muted-foreground">
+                    Try: “Top 5 customers by revenue in 1997” or “Which shippers had late orders last
+                    quarter?” Answers use the metrics catalog and your read-only connection when those
+                    services are configured.
                   </p>
                 ) : null}
               </div>
@@ -1164,7 +824,7 @@ export function ChatPanel({ variant = "default", initialConversationId = null }:
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Ask in plain language…"
+              placeholder="Ask about orders, customers, revenue, or inventory…"
               rows={3}
               disabled={sending || transcribing}
               className="min-h-[88px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] shadow-none focus-visible:ring-0"

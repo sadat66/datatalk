@@ -63,21 +63,9 @@ export function downloadResultTablePdf(opts: {
 
   let y = MARGIN;
 
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.setTextColor(15, 23, 42);
-  doc.text("Query results", MARGIN, y);
-  y += 22;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  doc.setTextColor(...MUTED);
-  doc.text(`${rows.length} row${rows.length === 1 ? "" : "s"}`, MARGIN, y);
-  y += 16;
-  doc.setTextColor(15, 23, 42);
-
   if (caption?.trim()) {
     doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
     const capLines = doc.splitTextToSize(caption.trim().slice(0, 500), maxTextWidth);
     for (const line of capLines) {
       doc.text(line, MARGIN, y);
