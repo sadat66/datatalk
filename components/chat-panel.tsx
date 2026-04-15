@@ -103,7 +103,6 @@ export function ChatPanel({
   });
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const browserSpeechSupported = useBrowserSpeechSupported();
   const ttsSupported = useTtsSupported();
@@ -111,10 +110,7 @@ export function ChatPanel({
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [pdfExportBusy, setPdfExportBusy] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const streamRef = useRef<MediaStream | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const speakingMessageIdRef = useRef<string | null>(null);
   const receivedDeltaRef = useRef(false);
@@ -257,7 +253,6 @@ export function ChatPanel({
   useEffect(() => {
     return () => {
       speechRecognitionRef.current?.stop();
-      streamRef.current?.getTracks().forEach((track) => track.stop());
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
@@ -297,121 +292,65 @@ export function ChatPanel({
     synth.speak(utterance);
   }, [ttsSupported]);
 
-  async function transcribeAudio(audioBlob: Blob) {
-    setTranscribing(true);
-    setError(null);
-    try {
-      const formData = new FormData();
-      formData.append("audio", audioBlob, "question.webm");
-      const res = await fetch("/api/stt", {
-        method: "POST",
-        body: formData,
-      });
-      const data = (await res.json()) as { text?: string; error?: string };
-      const text = data.text;
-      if (!res.ok || !text) {
-        throw new Error(data.error || "Transcription failed");
-      }
-      setDraft((prev) => {
-        const prefix = prev.trim();
-        return prefix ? `${prefix} ${text}` : text;
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Transcription failed");
-    } finally {
-      setTranscribing(false);
-    }
-  }
-
   async function toggleRecording() {
-    if (transcribing || sending) return;
+    if (sending) return;
 
     if (recording) {
       speechRecognitionRef.current?.stop();
-      mediaRecorderRef.current?.stop();
       setRecording(false);
       return;
     }
 
     const SpeechCtor = resolveBrowserSpeechCtor();
-    if (SpeechCtor) {
-      try {
-        setError(null);
-        let transcript = "";
-        const recognition = new SpeechCtor();
-        speechRecognitionRef.current = recognition;
-        recognition.lang = "en-US";
-        recognition.interimResults = true;
-        recognition.continuous = false;
-        recognition.maxAlternatives = 1;
-        recognition.onresult = (event) => {
-          const ev = event as {
-            resultIndex?: number;
-            results?: ArrayLike<{ isFinal?: boolean; 0?: { transcript?: string } }>;
-          };
-          const results = ev.results;
-          if (!results) return;
-          for (let i = ev.resultIndex ?? 0; i < results.length; i += 1) {
-            const result = results[i];
-            if (result?.isFinal) {
-              transcript += `${result[0]?.transcript ?? ""} `;
-            }
-          }
-        };
-        recognition.onerror = (event) => {
-          const ev = event as { error?: string };
-          setError(`Browser speech failed: ${ev.error ?? "unknown error"}`);
-        };
-        recognition.onend = () => {
-          const text = transcript.trim();
-          speechRecognitionRef.current = null;
-          setRecording(false);
-          if (text) {
-            setDraft((prev) => {
-              const prefix = prev.trim();
-              return prefix ? `${prefix} ${text}` : text;
-            });
-          }
-        };
-        recognition.start();
-        setRecording(true);
-        return;
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Browser speech start failed");
-      }
+    if (!SpeechCtor) {
+      setError(
+        "Voice input needs Web Speech API support. Try Chrome or Edge, or type your question.",
+      );
+      return;
     }
 
     try {
       setError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      chunksRef.current = [];
-
-      const recorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = (event: BlobEvent) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
+      let transcript = "";
+      const recognition = new SpeechCtor();
+      speechRecognitionRef.current = recognition;
+      recognition.lang = "en-US";
+      recognition.interimResults = true;
+      recognition.continuous = false;
+      recognition.maxAlternatives = 1;
+      recognition.onresult = (event) => {
+        const ev = event as {
+          resultIndex?: number;
+          results?: ArrayLike<{ isFinal?: boolean; 0?: { transcript?: string } }>;
+        };
+        const results = ev.results;
+        if (!results) return;
+        for (let i = ev.resultIndex ?? 0; i < results.length; i += 1) {
+          const result = results[i];
+          if (result?.isFinal) {
+            transcript += `${result[0]?.transcript ?? ""} `;
+          }
         }
       };
-
-      recorder.onstop = () => {
-        const mimeType = chunksRef.current[0]?.type || "audio/webm";
-        const audioBlob = new Blob(chunksRef.current, { type: mimeType });
-        chunksRef.current = [];
-        streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        mediaRecorderRef.current = null;
-        if (audioBlob.size > 0) {
-          void transcribeAudio(audioBlob);
+      recognition.onerror = (event) => {
+        const ev = event as { error?: string };
+        setError(`Browser speech failed: ${ev.error ?? "unknown error"}`);
+      };
+      recognition.onend = () => {
+        const text = transcript.trim();
+        speechRecognitionRef.current = null;
+        setRecording(false);
+        if (text) {
+          setDraft((prev) => {
+            const prefix = prev.trim();
+            return prefix ? `${prefix} ${text}` : text;
+          });
         }
       };
-
-      recorder.start();
+      recognition.start();
       setRecording(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Microphone access failed");
+      setError(e instanceof Error ? e.message : "Browser speech start failed");
     }
   }
 
@@ -826,7 +765,7 @@ export function ChatPanel({
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Ask about orders, customers, revenue, or inventory…"
               rows={3}
-              disabled={sending || transcribing}
+              disabled={sending}
               className="min-h-[88px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] shadow-none focus-visible:ring-0"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -840,22 +779,17 @@ export function ChatPanel({
                 type="button"
                 variant={recording ? "destructive" : "outline"}
                 onClick={() => void toggleRecording()}
-                disabled={sending || transcribing}
+                disabled={sending || !browserSpeechSupported}
                 title={
                   browserSpeechSupported
-                    ? "Use browser speech recognition"
-                    : "Fallback to server speech-to-text"
+                    ? "Speak your question (browser speech recognition)"
+                    : "Voice needs Web Speech API (e.g. Chrome or Edge)"
                 }
               >
                 {recording ? (
                   <>
                     <SquareIcon className="size-4" />
                     Stop
-                  </>
-                ) : transcribing ? (
-                  <>
-                    <Loader2Icon className="size-4 animate-spin" />
-                    Transcribing
                   </>
                 ) : (
                   <>
@@ -868,7 +802,7 @@ export function ChatPanel({
                 type="button"
                 className="bg-[var(--dt-teal)] text-white hover:bg-[var(--dt-teal)]/90"
                 onClick={() => void sendMessage()}
-                disabled={sending || transcribing}
+                disabled={sending}
               >
                 {sending ? (
                   <>
