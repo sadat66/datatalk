@@ -1,5 +1,14 @@
-import { redirect } from "next/navigation";
+import { DashboardOverview } from "@/components/dashboard-overview";
+import { OverviewDesktopRedirect } from "@/components/overview-desktop-redirect";
+import { getDashboardDataset } from "@/lib/northwind/dashboard-data";
 
-export default function DashboardOverviewPage() {
-  redirect("/dashboard");
+export default async function DashboardOverviewPage() {
+  const dashboardData = await getDashboardDataset();
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+      <OverviewDesktopRedirect />
+      <DashboardOverview data={dashboardData} />
+    </div>
+  );
 }
