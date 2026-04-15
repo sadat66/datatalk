@@ -597,11 +597,11 @@ export function ChatPanel({
       className={
         embedded
           ? "flex h-full min-h-0 w-full min-w-0 flex-1 flex-col"
-          : "flex min-h-0 w-full min-w-0 flex-1 flex-col gap-4 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,220px)_minmax(0,1fr)] lg:grid-rows-1 lg:items-stretch lg:gap-6"
+          : "flex min-h-0 w-full min-w-0 flex-1 flex-col gap-4 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] lg:grid-rows-1 lg:items-stretch lg:gap-6"
       }
     >
       {!embedded ? (
-        <Card className="hidden h-fit shrink-0 flex-col overflow-hidden border-border lg:flex lg:sticky lg:top-6 lg:max-h-[calc(100dvh-8rem)] lg:min-h-0 lg:overflow-y-auto">
+        <Card className="hidden h-full shrink-0 flex-col overflow-hidden border-border lg:flex lg:sticky lg:top-6 lg:max-h-[calc(100dvh-8rem)] lg:min-h-0 lg:overflow-y-auto">
           <CardHeader className="!flex !flex-col gap-1 pb-3">
             <CardTitle className="text-sm">Chats</CardTitle>
             <CardDescription className="text-xs leading-normal">Your saved threads</CardDescription>
@@ -609,7 +609,7 @@ export function ChatPanel({
           <CardContent className="min-h-0 space-y-2">
             <ConversationList
               embedded={embedded}
-              scrollAreaClassName="h-[min(220px,38dvh)] sm:h-[320px]"
+              scrollAreaClassName="h-[min(340px,54dvh)] sm:h-[460px]"
               loadingList={loadingList}
               conversations={conversations}
               activeConversationId={conversationId}
@@ -723,7 +723,7 @@ export function ChatPanel({
               <p className="text-xs font-medium text-muted-foreground">Threads</p>
               <ConversationList
                 embedded={embedded}
-                scrollAreaClassName=""
+                scrollAreaClassName="h-[min(280px,40dvh)] w-full"
                 loadingList={loadingList}
                 conversations={conversations}
                 activeConversationId={conversationId}

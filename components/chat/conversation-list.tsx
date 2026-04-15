@@ -39,7 +39,11 @@ export function ConversationList({
       </Button>
       <Separator />
       <ScrollArea
-        className={embedded ? "h-[120px] pr-2" : cn("min-h-0 overflow-hidden pr-2", scrollAreaClassName)}
+        className={cn(
+          "min-h-0 overflow-hidden pr-2",
+          embedded ? "h-[min(240px,34dvh)] w-full" : "h-full",
+          scrollAreaClassName,
+        )}
       >
         {loadingList ? (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -52,17 +56,20 @@ export function ConversationList({
               <div
                 key={c.id}
                 className={cn(
-                  "flex items-stretch gap-0.5 rounded-md border border-transparent",
+                  "flex w-full items-stretch gap-0.5 rounded-md border border-transparent",
                   activeConversationId === c.id && "border-border bg-muted/60",
                 )}
               >
                 <button
                   type="button"
                   onClick={() => onSelectConversation(c.id)}
-                  className="min-w-0 flex-1 px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/80"
+                  className={cn(
+                    "min-w-0 flex-1 text-left transition-colors hover:bg-muted/80",
+                    embedded ? "px-2 py-1.5 text-xs" : "px-2.5 py-2 text-sm",
+                  )}
                 >
                   <span className="line-clamp-2 font-medium">{c.title || "Untitled"}</span>
-                  <span className="mt-0.5 block text-[10px] text-muted-foreground tabular-nums">
+                  <span className={cn("mt-0.5 block text-muted-foreground tabular-nums", embedded ? "text-[10px]" : "text-xs")}>
                     {formatRelativeTime(c.created_at)}
                   </span>
                 </button>

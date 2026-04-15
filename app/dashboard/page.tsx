@@ -9,6 +9,11 @@ export default async function DashboardPage() {
     getDashboardDataset(),
     getConversationsPanelData(null),
   ]);
+  const latestConversationId = conversationsInitial?.conversations[0]?.id ?? null;
+  const chatInitialData =
+    latestConversationId !== null
+      ? await getConversationsPanelData(latestConversationId)
+      : conversationsInitial;
 
   return (
     <>
@@ -21,7 +26,11 @@ export default async function DashboardPage() {
         id="datatalk-chat"
         className="flex min-h-0 w-full shrink-0 flex-col border-t border-border bg-background max-lg:min-h-[min(420px,55dvh)] lg:h-full lg:max-h-full lg:min-h-0 lg:overflow-hidden lg:w-[clamp(480px,44vw,720px)] lg:max-w-[min(100%,56%)] lg:border-l lg:border-t-0"
       >
-        <ChatPanel variant="embedded" initialPanelData={conversationsInitial ?? { conversations: [] }} />
+        <ChatPanel
+          variant="embedded"
+          initialConversationId={latestConversationId}
+          initialPanelData={chatInitialData ?? { conversations: [] }}
+        />
       </div>
     </div>
     </>
