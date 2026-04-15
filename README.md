@@ -60,9 +60,6 @@ Copy `.env.example` to `.env.local` and set:
 
 Wrong data is worse than no data: the UI surfaces **validation failures** and **execution errors** instead of silently guessing.
 
-## Demo video (assignment)
-
-Record **5–10 minutes** covering: landing → auth → chat with a successful Northwind question → expand **Why this answer?** → show a **clarification** or **validation failure** → **Metrics** page → technical trade-offs and what you would improve next (auth hardening, caching, join fan-out tests, eval harness).
 
 ## Supabase CLI
 
