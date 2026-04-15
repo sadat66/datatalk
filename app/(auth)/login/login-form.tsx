@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
+import { loginAction } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,10 +20,12 @@ export function LoginForm({ nextPath }: LoginFormProps) {
   const [pending, setPending] = useState(false);
   const submitLockRef = useRef(false);
 
-  const next = useMemo(
-    () => nextPath ?? searchParams.get("next") ?? "/dashboard",
-    [nextPath, searchParams],
-  );
+  const next = useMemo(() => {
+    const raw = nextPath ?? searchParams.get("next") ?? "/dashboard";
+    if (raw === "/") return "/dashboard";
+    if (!/^\/[^/\\]/.test(raw)) return "/dashboard";
+    return raw;
+  }, [nextPath, searchParams]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -83,11 +86,12 @@ export function LoginForm({ nextPath }: LoginFormProps) {
       return;
     }
 
-    window.location.assign(next.startsWith("/") ? next : "/dashboard");
+    window.location.assign(next);
   }
 
   return (
-    <form onSubmit={onSubmit} className="relative space-y-4" aria-busy={pending}>
+    <form action={loginAction} onSubmit={onSubmit} className="relative space-y-4" aria-busy={pending}>
+      <input type="hidden" name="next" value={next} />
       {pending ? (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/75 backdrop-blur-sm">
           <span className="size-10 animate-spin rounded-full border-4 border-primary/25 border-t-primary" />

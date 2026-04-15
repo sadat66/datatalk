@@ -10,6 +10,7 @@ import {
 } from "react";
 import Link from "next/link";
 import {
+  ChevronDownIcon,
   ExternalLinkIcon,
   Loader2Icon,
   MicIcon,
@@ -110,6 +111,7 @@ export function ChatPanel({
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [pdfExportBusy, setPdfExportBusy] = useState(false);
+  const [mobileThreadsOpen, setMobileThreadsOpen] = useState(false);
   const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const speakingMessageIdRef = useRef<string | null>(null);
@@ -681,16 +683,35 @@ export function ChatPanel({
         }
       >
         {!embedded ? (
-          <div className="isolate border-b border-border bg-muted/30 px-4 py-3 lg:hidden">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Threads
-            </p>
-            <div className="space-y-2">{renderConversationList("h-[min(140px,26dvh)]")}</div>
+          <div className="isolate border-b border-border bg-muted/30 px-3 py-2 lg:hidden">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between py-0.5"
+              onClick={() => setMobileThreadsOpen((v) => !v)}
+            >
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Threads
+                {conversations.length > 0 ? (
+                  <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium tabular-nums text-muted-foreground">
+                    {conversations.length}
+                  </span>
+                ) : null}
+              </span>
+              <ChevronDownIcon
+                className={cn(
+                  "size-4 text-muted-foreground transition-transform",
+                  mobileThreadsOpen && "rotate-180",
+                )}
+              />
+            </button>
+            {mobileThreadsOpen ? (
+              <div className="mt-2 space-y-2">{renderConversationList("h-[min(140px,26dvh)]")}</div>
+            ) : null}
           </div>
         ) : null}
         <CardHeader
           className={cn(
-            "!flex !flex-col gap-2 border-border pb-4 pt-4 [&]:grid-rows-none",
+            "!flex !flex-col gap-2 border-border pb-2 pt-2 sm:pb-4 sm:pt-4 [&]:grid-rows-none",
             embedded ? "border-b pb-3 pt-4" : "border-b",
           )}
         >
@@ -702,7 +723,7 @@ export function ChatPanel({
               <CardDescription
                 className={cn(
                   "text-sm leading-relaxed text-muted-foreground",
-                  embedded ? "text-xs" : "max-lg:text-[13px] max-lg:leading-snug",
+                  embedded ? "text-xs" : "hidden sm:block max-lg:text-[13px] max-lg:leading-snug",
                 )}
               >
                 {embedded
@@ -712,7 +733,7 @@ export function ChatPanel({
                     : (
                         <>
                           <span className="lg:hidden">
-                            Ask in plain English — we validate SQL against your read-only database.
+                            Ask in plain English — validated SQL against your database.
                           </span>
                           <span className="hidden lg:inline">
                             Questions are validated and run against the read-only database when it is configured.
@@ -722,7 +743,7 @@ export function ChatPanel({
               </CardDescription>
             </div>
             {!pageVariant && conversationId ? (
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <div className="hidden shrink-0 flex-wrap items-center gap-2 sm:flex">
                 <Link
                   href={`/dashboard/chat/${conversationId}`}
                   target="_blank"
@@ -746,7 +767,7 @@ export function ChatPanel({
           ) : null}
         </CardHeader>
         <CardContent
-          className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden pt-4 pb-4"
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-hidden pt-2 pb-2 sm:gap-3 sm:pt-4 sm:pb-4"
         >
           {error ? (
             <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -755,8 +776,8 @@ export function ChatPanel({
           ) : null}
           <ScrollArea
             className={cn(
-              "min-h-[min(160px,24dvh)] flex-1 rounded-md border border-border bg-muted/20 p-3 sm:min-h-[min(260px,38dvh)]",
-              embedded || pageVariant ? "min-h-0 sm:min-h-0" : "min-h-0 sm:min-h-[min(220px,32dvh)]",
+              "min-h-0 flex-1 rounded-md border border-border bg-muted/20 p-2 sm:min-h-[min(200px,30dvh)] sm:p-3",
+              embedded || pageVariant ? "sm:min-h-0" : "",
             )}
           >
             {loadingMessages ? (
@@ -796,14 +817,14 @@ export function ChatPanel({
               </div>
             )}
           </ScrollArea>
-          <div className="shrink-0 space-y-2 rounded-2xl border border-border/60 bg-muted/30 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-inner">
+          <div className="shrink-0 space-y-1.5 rounded-2xl border border-border/60 bg-muted/30 p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] shadow-inner sm:space-y-2 sm:p-2 sm:pb-[max(0.5rem,env(safe-area-inset-bottom))]">
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Ask about orders, customers, revenue, or inventory…"
-              rows={3}
+              rows={2}
               disabled={sending}
-              className="min-h-[72px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] shadow-none focus-visible:ring-0 sm:min-h-[88px]"
+              className="min-h-[52px] resize-none border-0 bg-transparent px-2 py-1.5 text-[15px] shadow-none focus-visible:ring-0 sm:min-h-[88px] sm:py-2"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();

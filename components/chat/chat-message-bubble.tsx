@@ -223,7 +223,7 @@ export const ChatMessageBubble = memo(
       >
         <div
           className={cn(
-            "max-w-[min(92%,42rem)] rounded-2xl px-4 py-3 text-[15px] leading-relaxed tracking-[-0.01em] transition-[box-shadow,transform] duration-200",
+            "max-w-[min(92%,42rem)] rounded-2xl px-3 py-2 text-sm leading-relaxed tracking-[-0.01em] transition-[box-shadow,transform] duration-200 sm:px-4 sm:py-3 sm:text-[15px]",
             isUser
               ? "rounded-br-md bg-[var(--dt-teal)] text-white shadow-sm shadow-black/10"
               : "rounded-bl-md border border-border/60 bg-gradient-to-b from-card to-muted/20 text-card-foreground shadow-sm shadow-black/[0.04]",

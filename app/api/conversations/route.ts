@@ -20,6 +20,7 @@ export async function GET(request: Request) {
     if (msg === "Conversation not found") {
       return NextResponse.json({ error: msg }, { status: 404 });
     }
-    return NextResponse.json({ error: msg }, { status: 500 });
+    console.error("[conversations] unexpected error:", e);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

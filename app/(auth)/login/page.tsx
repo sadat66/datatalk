@@ -17,7 +17,12 @@ export default async function LoginPage({ searchParams }: Props) {
   }
 
   const params = (await searchParams) ?? {};
-  const error = params.error;
+  let error: string | undefined;
+  try {
+    error = params.error ? decodeURIComponent(params.error) : undefined;
+  } catch {
+    error = params.error;
+  }
 
   return (
     <Card className="w-full max-w-md border-border bg-card shadow-sm">
@@ -30,7 +35,7 @@ export default async function LoginPage({ searchParams }: Props) {
       <CardContent className="space-y-6">
         {error ? (
           <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            {decodeURIComponent(error)}
+            {error}
           </p>
         ) : null}
         <Suspense fallback={<p className="text-sm text-muted-foreground">Loading…</p>}>

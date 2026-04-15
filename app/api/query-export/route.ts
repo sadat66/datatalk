@@ -47,7 +47,8 @@ export async function POST(request: Request) {
   });
 
   if (!exec.ok) {
-    return NextResponse.json({ error: exec.error }, { status: 502 });
+    console.error("[query-export] execution error:", exec.error);
+    return NextResponse.json({ error: "Query execution failed" }, { status: 502 });
   }
 
   return NextResponse.json({
