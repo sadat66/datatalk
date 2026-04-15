@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { MessageSquareIcon } from "lucide-react";
+import { MenuIcon, MessageSquareIcon } from "lucide-react";
 
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 type DashboardHeaderProps = {
   displayName: string;
+  onOpenMobileNav?: () => void;
 };
 
 function initialsFromEmail(email: string): string {
@@ -19,7 +20,7 @@ function initialsFromEmail(email: string): string {
   return local.slice(0, 2).toUpperCase() || "U";
 }
 
-export function DashboardHeader({ displayName }: DashboardHeaderProps) {
+export function DashboardHeader({ displayName, onOpenMobileNav }: DashboardHeaderProps) {
   const initials = initialsFromEmail(displayName);
   const shortName = displayName.includes("@")
     ? displayName.split("@")[0]?.replace(/[._]/g, " ") ?? "User"
@@ -27,10 +28,26 @@ export function DashboardHeader({ displayName }: DashboardHeaderProps) {
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-card px-4 sm:px-6">
-      <div className="flex min-w-0 items-center gap-3">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+        {onOpenMobileNav ? (
+          <button
+            type="button"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-foreground shadow-sm lg:hidden"
+            aria-label="Open menu"
+            onClick={onOpenMobileNav}
+          >
+            <MenuIcon className="size-5" />
+          </button>
+        ) : null}
+        <Link
+          href="/dashboard/chat"
+          className="shrink-0 rounded-lg text-base font-semibold tracking-tight text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
+        >
+          DataTalk
+        </Link>
         <Link
           href="/dashboard"
-          className="shrink-0 rounded-lg text-base font-semibold tracking-tight text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="hidden shrink-0 rounded-lg text-base font-semibold tracking-tight text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring lg:inline"
         >
           DataTalk
         </Link>

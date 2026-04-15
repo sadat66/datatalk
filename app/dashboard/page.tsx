@@ -1,4 +1,5 @@
 import { ChatPanel } from "@/components/chat-panel";
+import { DashboardMobileRedirect } from "@/components/dashboard-mobile-redirect";
 import { DashboardOverview } from "@/components/dashboard-overview";
 import { getConversationsPanelData } from "@/lib/conversations/panel-data";
 import { getDashboardDataset } from "@/lib/northwind/dashboard-data";
@@ -10,7 +11,9 @@ export default async function DashboardPage() {
   ]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+    <>
+      <DashboardMobileRedirect />
+      <div className="hidden min-h-0 flex-1 flex-col lg:flex lg:flex-row">
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 sm:p-6">
         <DashboardOverview data={dashboardData} />
       </div>
@@ -21,5 +24,6 @@ export default async function DashboardPage() {
         <ChatPanel variant="embedded" initialPanelData={conversationsInitial ?? { conversations: [] }} />
       </div>
     </div>
+    </>
   );
 }

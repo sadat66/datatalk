@@ -94,7 +94,7 @@ export default function MetricsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Link href="/dashboard" className={cn(buttonVariants({ variant: "link" }), "h-auto px-0")}>
+          <Link href="/dashboard/chat" className={cn(buttonVariants({ variant: "link" }), "h-auto px-0")}>
             Return to chat
           </Link>
         </CardContent>

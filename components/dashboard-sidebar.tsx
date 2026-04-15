@@ -14,17 +14,27 @@ import { SignOutButton } from "@/components/sign-out-button";
 import { cn } from "@/lib/utils";
 
 const nav = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboardIcon, match: "exact" as const },
+  { href: "/dashboard/overview", label: "Overview", icon: LayoutDashboardIcon, match: "overview" as const },
   { href: "/dashboard/chat", label: "Chat", icon: MessageSquareIcon, match: "prefix" as const },
   { href: "/dashboard/metrics", label: "Metrics", icon: FileBarChartIcon, match: "prefix" as const },
 ] as const;
 
 function isActive(pathname: string, href: string, match: (typeof nav)[number]["match"]) {
-  if (match === "exact") return pathname === href;
+  if (match === "overview") {
+    return (
+      pathname === "/dashboard" ||
+      pathname === "/dashboard/overview" ||
+      pathname.startsWith("/dashboard/overview/")
+    );
+  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function DashboardSidebar() {
+type DashboardSidebarProps = {
+  onNavigate?: () => void;
+};
+
+export function DashboardSidebar({ onNavigate }: DashboardSidebarProps) {
   const pathname = usePathname();
 
   return (
@@ -40,6 +50,7 @@ export function DashboardSidebar() {
             <Link
               key={item.label}
               href={item.href}
+              onClick={() => onNavigate?.()}
               className={cn(
                 "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
                 active
