@@ -40,8 +40,8 @@ export function ConversationList({
       <Separator />
       <ScrollArea
         className={cn(
-          "min-h-0 overflow-hidden pr-2",
-          embedded ? "h-[min(240px,34dvh)] w-full" : "h-full",
+          "min-h-0 overflow-hidden",
+          embedded ? "h-[min(240px,34dvh)] w-full pr-0" : "h-full pr-2",
           scrollAreaClassName,
         )}
       >
