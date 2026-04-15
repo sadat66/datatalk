@@ -7,7 +7,7 @@ import { ChatFlowError, runChatFlow } from "@/lib/datatalk/chat-flow";
 const bodySchema = z.object({
   conversationId: z.string().uuid().optional().nullable(),
   message: z.string().min(1).max(8000),
-  /** User confirmed extra checks and may accept slower response. */
+  /** Accepted for API compatibility; the server always enforces strict verification (demo policy). */
   strictVerification: z.boolean().optional(),
   /** Next page of last query — 15 rows per page */
   resultOffset: z.number().int().min(0).optional(),
@@ -58,10 +58,9 @@ export async function POST(request: Request) {
 
   const wantsStream = request.headers.get("accept")?.includes("text/event-stream");
   const { message, conversationId: rawConversationId, resultOffset } = parsed.data;
-  // Enforce strict verification on all chat runs so SQL-backed answers consistently
-  // receive the extra review pass without requiring an explicit user action.
-  const strictVerification = true;
   const incomingConversationId = rawConversationId ?? null;
+  // Wrong numbers are worse than no numbers: always run the extra SQL review pass.
+  const strictVerification = true;
 
   if (!wantsStream) {
     try {
