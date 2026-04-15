@@ -576,19 +576,23 @@ export function ChatPanel({
     [conversationId, startNewChat],
   );
 
-  const conversationList = (
+  const renderConversationList = (scrollAreaClassName: string) => (
     <>
       <Button
         type="button"
         variant="secondary"
         size="sm"
-        className={embedded ? "w-full" : "w-full"}
+        className="w-full"
         onClick={startNewChat}
       >
         New chat
       </Button>
       <Separator />
-      <ScrollArea className={embedded ? "h-[120px] pr-2" : "h-[320px] pr-2"}>
+      <ScrollArea
+        className={
+          embedded ? "h-[120px] pr-2" : cn("min-h-0 overflow-hidden pr-2", scrollAreaClassName)
+        }
+      >
         {loadingList ? (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2Icon className="size-3.5 animate-spin" />
@@ -639,7 +643,9 @@ export function ChatPanel({
               </div>
             ))}
             {!conversations.length ? (
-              <p className="text-xs text-muted-foreground">No chats yet — start below.</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                No chats yet — start a message below.
+              </p>
             ) : null}
           </div>
         )}
@@ -651,17 +657,19 @@ export function ChatPanel({
     <div
       className={
         embedded
-          ? "flex h-full min-h-0 flex-1 flex-col"
-          : "grid min-h-0 flex-1 grid-rows-1 gap-6 lg:grid-cols-[220px_1fr]"
+          ? "flex h-full min-h-0 w-full min-w-0 flex-1 flex-col"
+          : "flex min-h-0 w-full min-w-0 flex-1 flex-col gap-4 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,220px)_minmax(0,1fr)] lg:grid-rows-1 lg:items-stretch lg:gap-6"
       }
     >
       {!embedded ? (
-        <Card className="h-fit border-border lg:sticky lg:top-6">
-          <CardHeader className="pb-3">
+        <Card className="hidden h-fit shrink-0 flex-col overflow-hidden border-border lg:flex lg:sticky lg:top-6 lg:max-h-[calc(100dvh-8rem)] lg:min-h-0 lg:overflow-y-auto">
+          <CardHeader className="!flex !flex-col gap-1 pb-3">
             <CardTitle className="text-sm">Chats</CardTitle>
-            <CardDescription className="text-xs">Your saved threads</CardDescription>
+            <CardDescription className="text-xs leading-normal">Your saved threads</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-2">{conversationList}</CardContent>
+          <CardContent className="min-h-0 space-y-2">
+            {renderConversationList("h-[min(220px,38dvh)] sm:h-[320px]")}
+          </CardContent>
         </Card>
       ) : null}
 
@@ -669,21 +677,48 @@ export function ChatPanel({
         className={
           embedded
             ? "flex min-h-0 flex-1 flex-col rounded-none border-0 border-l border-border bg-card shadow-none"
-            : "flex min-h-0 h-full min-w-0 flex-1 flex-col border-border"
+            : "relative z-10 flex min-h-0 min-w-0 flex-1 flex-col border-border bg-card shadow-sm lg:min-h-0 lg:overflow-hidden"
         }
       >
-        <CardHeader className={embedded ? "border-b border-border pb-3 pt-4" : "border-b border-border pb-4"}>
+        {!embedded ? (
+          <div className="isolate border-b border-border bg-muted/30 px-4 py-3 lg:hidden">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Threads
+            </p>
+            <div className="space-y-2">{renderConversationList("h-[min(140px,26dvh)]")}</div>
+          </div>
+        ) : null}
+        <CardHeader
+          className={cn(
+            "!flex !flex-col gap-2 border-border pb-4 pt-4 [&]:grid-rows-none",
+            embedded ? "border-b pb-3 pt-4" : "border-b",
+          )}
+        >
           <div className="flex flex-wrap items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 space-y-1.5">
               <CardTitle className={embedded ? "text-base" : "text-lg"}>
                 {embedded ? "DataTalk" : pageVariant ? "Conversation" : "DataTalk"}
               </CardTitle>
-              <CardDescription className={embedded ? "text-xs" : ""}>
+              <CardDescription
+                className={cn(
+                  "text-sm leading-relaxed text-muted-foreground",
+                  embedded ? "text-xs" : "max-lg:text-[13px] max-lg:leading-snug",
+                )}
+              >
                 {embedded
                   ? "Natural language → validated SQL on the Northwind sample database."
                   : pageVariant
                     ? "Same thread as in the workspace; use the full height for longer answers."
-                    : "Questions are validated and run against the read-only database when it is configured."}
+                    : (
+                        <>
+                          <span className="lg:hidden">
+                            Ask in plain English — we validate SQL against your read-only database.
+                          </span>
+                          <span className="hidden lg:inline">
+                            Questions are validated and run against the read-only database when it is configured.
+                          </span>
+                        </>
+                      )}
               </CardDescription>
             </div>
             {!pageVariant && conversationId ? (
@@ -706,15 +741,12 @@ export function ChatPanel({
           {embedded ? (
             <div className="mt-3 space-y-2">
               <p className="text-xs font-medium text-muted-foreground">Threads</p>
-              {conversationList}
+              {renderConversationList("")}
             </div>
           ) : null}
         </CardHeader>
         <CardContent
-          className={cn(
-            "flex flex-1 flex-col gap-3 pt-4",
-            (embedded || pageVariant) && "min-h-0 overflow-hidden pb-4",
-          )}
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden pt-4 pb-4"
         >
           {error ? (
             <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -723,8 +755,8 @@ export function ChatPanel({
           ) : null}
           <ScrollArea
             className={cn(
-              "min-h-[min(200px,28dvh)] flex-1 rounded-md border border-border bg-muted/20 p-3 sm:min-h-[min(260px,38dvh)]",
-              (embedded || pageVariant) && "min-h-0 sm:min-h-0",
+              "min-h-[min(160px,24dvh)] flex-1 rounded-md border border-border bg-muted/20 p-3 sm:min-h-[min(260px,38dvh)]",
+              embedded || pageVariant ? "min-h-0 sm:min-h-0" : "min-h-0 sm:min-h-[min(220px,32dvh)]",
             )}
           >
             {loadingMessages ? (
@@ -750,23 +782,28 @@ export function ChatPanel({
                 ))}
                 <div ref={messagesEndRef} className="h-px shrink-0" aria-hidden />
                 {!messages.length ? (
-                  <p className="text-pretty text-sm text-muted-foreground">
-                    Try: “Top 5 customers by revenue in 1997” or “Which shippers had late orders last
-                    quarter?” Answers use the metrics catalog and your read-only connection when those
-                    services are configured.
-                  </p>
+                  <div className="rounded-lg border border-border/80 bg-background/80 p-3 text-pretty text-xs leading-relaxed text-muted-foreground sm:p-4 sm:text-sm">
+                    <p className="font-medium text-foreground">Try asking</p>
+                    <p className="mt-2">
+                      e.g. “Top 5 customers by revenue in 1997” or “Which shippers had late orders last
+                      quarter?”
+                    </p>
+                    <p className="mt-2 text-[11px] text-muted-foreground/90 sm:text-xs">
+                      Answers use the metrics catalog when your database connection is configured.
+                    </p>
+                  </div>
                 ) : null}
               </div>
             )}
           </ScrollArea>
-          <div className="space-y-2 rounded-2xl border border-border/60 bg-muted/30 p-2 shadow-inner">
+          <div className="shrink-0 space-y-2 rounded-2xl border border-border/60 bg-muted/30 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-inner">
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Ask about orders, customers, revenue, or inventory…"
               rows={3}
               disabled={sending}
-              className="min-h-[88px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] shadow-none focus-visible:ring-0"
+              className="min-h-[72px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] shadow-none focus-visible:ring-0 sm:min-h-[88px]"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -774,10 +811,12 @@ export function ChatPanel({
                 }
               }}
             />
-            <div className="flex justify-end gap-2 px-1 pb-1">
+            <div className="flex flex-wrap justify-end gap-2 px-1 pb-1 sm:flex-nowrap">
               <Button
                 type="button"
                 variant={recording ? "destructive" : "outline"}
+                size="sm"
+                className="shrink-0"
                 onClick={() => void toggleRecording()}
                 disabled={sending || !browserSpeechSupported}
                 title={
@@ -800,7 +839,8 @@ export function ChatPanel({
               </Button>
               <Button
                 type="button"
-                className="bg-[var(--dt-teal)] text-white hover:bg-[var(--dt-teal)]/90"
+                size="sm"
+                className="shrink-0 bg-[var(--dt-teal)] text-white hover:bg-[var(--dt-teal)]/90"
                 onClick={() => void sendMessage()}
                 disabled={sending}
               >

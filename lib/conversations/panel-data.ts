@@ -1,5 +1,5 @@
 import type { Conversation, MessageRow } from "@/components/chat/types";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, hasSupabaseEnv } from "@/lib/supabase/server";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -16,6 +16,10 @@ export type ConversationsPanelPayload = {
 export async function getConversationsPanelData(
   messagesFor: string | null,
 ): Promise<ConversationsPanelPayload | null> {
+  if (!hasSupabaseEnv()) {
+    return null;
+  }
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -31,12 +35,13 @@ export async function getConversationsPanelData(
     .order("created_at", { ascending: false })
     .limit(50);
 
+  const conversationList: Conversation[] = listError ? [] : (conversations ?? []);
   if (listError) {
-    throw new Error(listError.message);
+    console.error("[getConversationsPanelData] conversations list:", listError.message);
   }
 
   if (!messagesFor) {
-    return { conversations: conversations ?? [] };
+    return { conversations: conversationList };
   }
 
   if (!UUID_RE.test(messagesFor)) {
@@ -60,11 +65,11 @@ export async function getConversationsPanelData(
     .order("created_at", { ascending: true });
 
   if (msgError) {
-    throw new Error(msgError.message);
+    console.error("[getConversationsPanelData] messages:", msgError.message);
   }
 
   return {
-    conversations: conversations ?? [],
-    messages: messages ?? [],
+    conversations: conversationList,
+    messages: msgError ? [] : (messages ?? []),
   };
 }

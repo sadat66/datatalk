@@ -340,7 +340,7 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
                   {lateOrders.map((row) => (
                     <TableRow key={row.orderId}>
                       <TableCell className="font-medium">
-                        <Link href="/dashboard" className="text-[var(--dt-teal)] hover:underline">
+                        <Link href="/dashboard/overview" className="text-[var(--dt-teal)] hover:underline">
                           {row.orderId}
                         </Link>
                       </TableCell>
@@ -377,7 +377,7 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
                   {unfinishedOrders.map((row) => (
                     <TableRow key={row.orderId}>
                       <TableCell className="font-medium">
-                        <Link href="/dashboard" className="text-[var(--dt-teal)] hover:underline">
+                        <Link href="/dashboard/overview" className="text-[var(--dt-teal)] hover:underline">
                           {row.orderId}
                         </Link>
                       </TableCell>
