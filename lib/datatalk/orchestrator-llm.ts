@@ -4,6 +4,14 @@ import { buildColumnSemanticsHint, buildSchemaPromptExcerpt } from "@/lib/northw
 import { goldStandardExamplesBlock } from "@/lib/northwind/gold-examples";
 import { llmPipelineSchema, type LlmPipelineResult } from "@/lib/datatalk/types";
 
+function parseMaxRepairAttempts(): number {
+  const raw = process.env.DATATALK_MAX_REPAIR_ATTEMPTS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, 5) : 3;
+}
+
+export const MAX_REPAIR_ATTEMPTS = parseMaxRepairAttempts();
+
 const SYSTEM_PROMPT = `You are DataTalk, an analytics assistant for the Northwind PostgreSQL database.
 You must respond with a single JSON object (no markdown) using this shape:
 {
@@ -102,12 +110,22 @@ export async function runModel(context: string): Promise<LlmPipelineResult> {
   return parseLlmJson(raw);
 }
 
-export async function repairSql(context: string, previousSql: string, errors: string[]): Promise<string> {
+export async function repairSql(
+  context: string,
+  previousSql: string,
+  errors: string[],
+  priorAttempts?: { sql: string; errors: string[] }[],
+): Promise<string> {
+  const historyBlock =
+    priorAttempts && priorAttempts.length > 0
+      ? `\n\nPrior repair attempts that also failed:\n${priorAttempts.map((a, i) => `Attempt ${i + 1}:\nSQL: ${a.sql}\nErrors: ${a.errors.join("; ")}`).join("\n")}\nAvoid repeating the same mistakes.`
+      : "";
+
   const raw = await chatCompletionJson([
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
-      content: `${context}\n\nThe previous SQL failed validation:\nSQL:\n${previousSql}\nErrors:\n- ${errors.join("\n- ")}\n\nReturn a NEW full JSON object with kind=answer and corrected sql only if you can fix it; otherwise kind=refuse with assistant_message explaining why.`,
+      content: `${context}\n\nThe previous SQL failed validation:\nSQL:\n${previousSql}\nErrors:\n- ${errors.join("\n- ")}${historyBlock}\n\nReturn a NEW full JSON object with kind=answer and corrected sql only if you can fix it; otherwise kind=refuse with assistant_message explaining why.`,
     },
   ]);
   const parsed = parseLlmJson(raw);
@@ -124,6 +142,7 @@ export async function repairSqlForIntent(input: {
   confidence: number;
   mismatches: string[];
   clarifySuggestion?: string | null;
+  priorAttempts?: { sql: string; confidence: number; mismatches: string[] }[];
 }): Promise<string> {
   const mismatchLines = input.mismatches.length
     ? `\nMismatches:\n- ${input.mismatches.join("\n- ")}`
@@ -131,6 +150,10 @@ export async function repairSqlForIntent(input: {
   const clarifyLine = input.clarifySuggestion?.trim()
     ? `\nClarify suggestion from verifier:\n${input.clarifySuggestion.trim()}`
     : "";
+  const historyBlock =
+    input.priorAttempts && input.priorAttempts.length > 0
+      ? `\n\nPrior intent-repair attempts that still scored below threshold:\n${input.priorAttempts.map((a, i) => `Attempt ${i + 1}: confidence ${a.confidence}/100, SQL: ${a.sql}, mismatches: ${a.mismatches.join("; ") || "none"}`).join("\n")}\nTry a different approach to match the user intent.`
+      : "";
 
   const raw = await chatCompletionJson([
     { role: "system", content: SYSTEM_PROMPT },
@@ -145,7 +168,7 @@ ${input.userMessage}
 Current SQL:
 ${input.previousSql}
 
-Intent-verifier confidence: ${input.confidence}/100.${mismatchLines}${clarifyLine}
+Intent-verifier confidence: ${input.confidence}/100.${mismatchLines}${clarifyLine}${historyBlock}
 
 Return a NEW full JSON object with kind=answer and corrected sql that better matches the user request. Do not ask the user to clarify if a reasonable SQL interpretation can be executed safely.`,
     },
@@ -162,7 +185,13 @@ export async function repairSqlForExplain(input: {
   previousSql: string;
   userMessage: string;
   explainError: string;
+  priorAttempts?: { sql: string; error: string }[];
 }): Promise<string> {
+  const historyBlock =
+    input.priorAttempts && input.priorAttempts.length > 0
+      ? `\n\nPrior repair attempts that also failed EXPLAIN:\n${input.priorAttempts.map((a, i) => `Attempt ${i + 1}:\nSQL: ${a.sql}\nEXPLAIN error: ${a.error}`).join("\n")}\nDo not repeat the same SQL or mistakes.`
+      : "";
+
   const raw = await chatCompletionJson([
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -177,7 +206,7 @@ Current SQL:
 ${input.previousSql}
 
 EXPLAIN error:
-${input.explainError}
+${input.explainError}${historyBlock}
 
 Return a NEW full JSON object with kind=answer and corrected sql that preserves the user intent.
 Pay extra attention to aggregate correctness (GROUP BY vs non-aggregated selected columns), join keys, and date filters.
