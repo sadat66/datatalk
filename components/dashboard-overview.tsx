@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
+import { EXAMPLE_CHAT_PROMPTS } from "@/lib/datatalk/example-prompts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -202,6 +203,8 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
   const kpiCards = [
     {
       title: "Total revenue",
+      definition:
+        "Sum of line revenue (unit price × quantity × (1 − discount)) for orders with an order date in the fiscal year.",
       value: formatUsd(kpis.totalRevenue),
       ...deltaLabel(kpis.totalRevenueDeltaPct, compareYear),
       spark: kpis.revenueSpark,
@@ -209,6 +212,8 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
     },
     {
       title: "Avg order value",
+      definition:
+        "Total line revenue for the year divided by count of distinct orders in that year (order-level average basket).",
       value: formatUsd(kpis.avgOrderValue),
       ...deltaLabel(kpis.avgOrderValueDeltaPct, compareYear),
       spark: kpis.avgOrderSpark,
@@ -216,6 +221,8 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
     },
     {
       title: "Orders shipped",
+      definition:
+        "Count of orders with a shipped date in the fiscal year (excludes orders that never shipped in that year).",
       value: kpis.ordersShipped.toLocaleString(),
       ...deltaLabel(kpis.ordersShippedDeltaPct, compareYear),
       spark: kpis.shippedSpark,
@@ -223,6 +230,8 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
     },
     {
       title: "New customers",
+      definition:
+        "Customers whose first order falls in the fiscal year (approx. cohort based on earliest order date).",
       value: kpis.newCustomers.toLocaleString(),
       ...deltaLabel(kpis.newCustomersDeltaPct, compareYear),
       spark: kpis.customersSpark,
@@ -251,6 +260,34 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
         </span>
       </div>
 
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader className="pb-2 sm:pb-3">
+          <CardTitle className="text-base">What you can ask</CardTitle>
+          <CardDescription className="text-pretty">
+            Plain-English questions — no SQL required. Tap a pill to open Chat with that question.{" "}
+            <span className="lg:hidden">
+              Use <strong>Chat</strong> in the menu (☰) anytime.
+            </span>
+            <span className="hidden lg:inline">You can also type in the DataTalk panel on the right.</span>
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] sm:flex-wrap sm:overflow-visible">
+            {EXAMPLE_CHAT_PROMPTS.map((p) => (
+              <Link
+                key={p.id}
+                href={`/dashboard/chat?prompt=${encodeURIComponent(p.text)}`}
+                scroll={false}
+                className="shrink-0 snap-start rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted/80 active:bg-muted"
+                title={p.text}
+              >
+                {p.label}
+              </Link>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {kpiCards.map((k) => (
           <Card
@@ -278,6 +315,7 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
               >
                 {k.text}
               </p>
+              <p className="text-[11px] leading-snug text-muted-foreground">{k.definition}</p>
             </CardContent>
           </Card>
         ))}
@@ -312,6 +350,10 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
                 <span className="tabular-nums">{historyYear}</span>
               </span>
             </div>
+            <p className="mb-3 text-[11px] leading-snug text-muted-foreground">
+              Revenue is line total (unit × qty × (1 − discount)) summed by calendar month. Solid = FY{" "}
+              {focusYear}, dashed = FY {compareYear}, dotted = FY {historyYear} (same month positions).
+            </p>
             <RevenueChart rows={revenueByMonth} />
           </CardContent>
         </Card>
@@ -326,7 +368,8 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
           </CardHeader>
           <CardContent className="px-0 pb-2">
             {lateOrders.length ? (
-              <Table>
+              <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
+                <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead>Order</TableHead>
@@ -352,6 +395,7 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
                   ))}
                 </TableBody>
               </Table>
+              </div>
             ) : (
               <p className="px-4 text-sm text-muted-foreground">No late shipments found.</p>
             )}
@@ -364,7 +408,8 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
           </CardHeader>
           <CardContent className="px-0 pb-2">
             {unfinishedOrders.length ? (
-              <Table>
+              <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
+                <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead>Order</TableHead>
@@ -401,6 +446,7 @@ export function DashboardOverview({ data }: { data: DashboardDataset }) {
                   ))}
                 </TableBody>
               </Table>
+              </div>
             ) : (
               <p className="px-4 text-sm text-muted-foreground">No open or late orders in this year.</p>
             )}

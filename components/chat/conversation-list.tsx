@@ -33,7 +33,7 @@ export function ConversationList({
   onDeleteConversation,
 }: ConversationListProps) {
   return (
-    <>
+    <div className="w-full min-w-0 space-y-2">
       <Button type="button" variant="secondary" size="sm" className="w-full" onClick={onStartNewChat}>
         New chat
       </Button>
@@ -101,6 +101,6 @@ export function ConversationList({
           </div>
         )}
       </ScrollArea>
-    </>
+    </div>
   );
 }

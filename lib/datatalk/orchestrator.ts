@@ -202,7 +202,7 @@ export async function runOrchestrator(input: {
     return { assistant_message: model.assistant_message, kind: "refuse", trust };
   }
 
-  let sql = typeof model.sql === "string" ? model.sql.trim() : "";
+  const sql = typeof model.sql === "string" ? model.sql.trim() : "";
   if (!sql) {
     const trust = buildTrustReport({ pipeline: "conversational" });
     return {
