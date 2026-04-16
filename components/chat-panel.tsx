@@ -27,6 +27,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { downloadResultTablePdf } from "@/lib/export-result-table-pdf";
+import { EXAMPLE_CHAT_PROMPTS } from "@/lib/datatalk/example-prompts";
 import { cn } from "@/lib/utils";
 
 type BrowserSpeechRecognition = {
@@ -79,12 +80,15 @@ type ChatPanelProps = {
   initialConversationId?: string | null;
   /** When provided (e.g. from SSR), skips the initial client fetch to `/api/conversations`. */
   initialPanelData?: ConversationsPanelPayload;
+  /** From `/dashboard/chat?prompt=` — send once if the thread is empty (full chat page). */
+  initialAutoSendPrompt?: string | null;
 };
 
 export function ChatPanel({
   variant = "default",
   initialConversationId = null,
   initialPanelData,
+  initialAutoSendPrompt = null,
 }: ChatPanelProps) {
   const embedded = variant === "embedded";
   const pageVariant = variant === "page";
@@ -121,6 +125,7 @@ export function ChatPanel({
   const isSendingRef = useRef(false);
   /** True when the in-flight send started with no conversation yet (SSE meta will assign id). */
   const isCreatingConversationRef = useRef(false);
+  const didAutoSendInitialPromptRef = useRef(false);
   const sendMessageRef = useRef<
     | ((
         opts?: {
@@ -545,6 +550,17 @@ export function ChatPanel({
 
   sendMessageRef.current = sendMessage;
 
+  useEffect(() => {
+    const p = initialAutoSendPrompt?.trim();
+    if (!p) return;
+    if (didAutoSendInitialPromptRef.current) return;
+    if (loadingMessages) return;
+    if (messages.length > 0) return;
+    didAutoSendInitialPromptRef.current = true;
+    void sendMessage({ messageText: p });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot: empty thread + SSR prompt only
+  }, [initialAutoSendPrompt, loadingMessages, messages.length]);
+
   const startNewChat = useCallback(() => {
     isCreatingConversationRef.current = false;
     setConversationId(null);
@@ -625,7 +641,7 @@ export function ChatPanel({
       <Card
         className={
           embedded
-            ? "flex min-h-0 flex-1 flex-col rounded-none border-0 border-l border-border bg-card shadow-none"
+            ? "flex min-h-0 flex-1 flex-col gap-0 rounded-none border-0 border-l border-border bg-card py-0 shadow-none"
             : "relative z-10 flex min-h-0 min-w-0 flex-1 flex-col border-border bg-card shadow-sm lg:min-h-0 lg:overflow-hidden"
         }
       >
@@ -671,10 +687,10 @@ export function ChatPanel({
         <CardHeader
           className={cn(
             "!flex !flex-col gap-2 border-border pb-2 pt-2 sm:pb-4 sm:pt-4 [&]:grid-rows-none",
-            embedded ? "border-b pb-3 pt-4" : "border-b",
+            embedded ? "border-b-0 pb-2 pt-4 sm:pb-2 sm:pt-4" : "border-b",
           )}
         >
-          <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex w-full min-w-0 flex-wrap items-start justify-between gap-2">
             <div className="min-w-0 flex-1 space-y-1.5">
               <CardTitle className={embedded ? "text-base" : "text-lg"}>
                 {embedded ? "DataTalk" : pageVariant ? "Conversation" : "DataTalk"}
@@ -718,23 +734,23 @@ export function ChatPanel({
               </div>
             ) : null}
           </div>
-          {embedded ? (
-            <div className="mt-3 space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">Threads</p>
-              <ConversationList
-                embedded={embedded}
-                scrollAreaClassName="h-[min(280px,40dvh)] w-full"
-                loadingList={loadingList}
-                conversations={conversations}
-                activeConversationId={conversationId}
-                deletingConversationId={deletingConversationId}
-                onStartNewChat={startNewChat}
-                onSelectConversation={selectConversation}
-                onDeleteConversation={handleDeleteConversation}
-              />
-            </div>
-          ) : null}
         </CardHeader>
+        {embedded ? (
+          <div className="w-full min-w-0 space-y-2 border-b border-border px-4 pb-3 pt-2 sm:px-4">
+            <p className="text-xs font-medium text-muted-foreground">Threads</p>
+            <ConversationList
+              embedded={embedded}
+              scrollAreaClassName="h-[min(280px,40dvh)] w-full min-w-0"
+              loadingList={loadingList}
+              conversations={conversations}
+              activeConversationId={conversationId}
+              deletingConversationId={deletingConversationId}
+              onStartNewChat={startNewChat}
+              onSelectConversation={selectConversation}
+              onDeleteConversation={handleDeleteConversation}
+            />
+          </div>
+        ) : null}
         <CardContent
           className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-hidden pt-2 pb-2 sm:gap-3 sm:pt-4 sm:pb-4"
         >
@@ -772,15 +788,33 @@ export function ChatPanel({
                 ))}
                 <div ref={messagesEndRef} className="h-px shrink-0" aria-hidden />
                 {!messages.length ? (
-                  <div className="rounded-lg border border-border/80 bg-background/80 p-3 text-pretty text-xs leading-relaxed text-muted-foreground sm:p-4 sm:text-sm">
-                    <p className="font-medium text-foreground">Try asking</p>
-                    <p className="mt-2">
-                      e.g. “Top 5 customers by revenue in 1997” or “Which shippers had late orders last
-                      quarter?”
+                  <div className="rounded-lg border border-border/80 bg-background/80 p-3 text-pretty sm:p-4">
+                    <p className="text-xs font-medium text-foreground sm:text-sm">Try asking</p>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground sm:text-sm">
+                      Tap a suggestion or type your own. Answers use validated, read-only SQL when your
+                      database is configured.
                     </p>
-                    <p className="mt-2 text-[11px] text-muted-foreground/90 sm:text-xs">
-                      Answers use the metrics catalog when your database connection is configured.
-                    </p>
+                    <div
+                      className="mt-3 flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] sm:flex-wrap sm:overflow-visible"
+                      role="list"
+                      aria-label="Suggested questions"
+                    >
+                      {EXAMPLE_CHAT_PROMPTS.map((p) => (
+                        <Button
+                          key={p.id}
+                          type="button"
+                          role="listitem"
+                          variant="outline"
+                          size="sm"
+                          disabled={sending}
+                          className="h-auto shrink-0 snap-start rounded-full px-3 py-1.5 text-xs font-medium whitespace-nowrap shadow-sm"
+                          title={p.text}
+                          onClick={() => void sendMessage({ messageText: p.text })}
+                        >
+                          {p.label}
+                        </Button>
+                      ))}
+                    </div>
                   </div>
                 ) : null}
               </div>

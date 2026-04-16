@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { getUserOrClearSession } from "@/lib/supabase/get-user";
 import { createClient } from "@/lib/supabase/server";
 import { executeReadonlySelect } from "@/lib/datatalk/executor";
 import { QUERY_RESULT_EXPORT_MAX_ROWS } from "@/lib/datatalk/query-export-limits";
@@ -12,9 +13,7 @@ const bodySchema = z.object({
 
 export async function POST(request: Request) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getUserOrClearSession(supabase);
 
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

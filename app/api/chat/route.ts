@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { getUserOrClearSession } from "@/lib/supabase/get-user";
 import { createClient } from "@/lib/supabase/server";
 import { ChatFlowError, runChatFlow } from "@/lib/datatalk/chat-flow";
 
@@ -36,9 +37,7 @@ function delay(ms: number): Promise<void> {
 
 export async function POST(request: Request) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getUserOrClearSession(supabase);
 
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
