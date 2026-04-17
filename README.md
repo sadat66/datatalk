@@ -130,6 +130,7 @@ There is **no automated test suite** in this prototype; behavior is validated ma
 4. **Performance and cost controls:** Introduce query/result caching, prompt-token budgets, and model-routing policies to reduce latency and API cost while preserving trust guarantees.
 5. **Tighter metric semantics:** Formalize canonical business metric definitions (for example revenue, discount handling, returns) to avoid subtle drift between natural-language intent and SQL implementation.
 6. **Fine-tuned NL-to-SQL model:** This prototype currently uses a general-purpose LLM with prompt + validation guardrails (not a fine-tuned NL-to-SQL model). A clear next improvement is to train/adapt a schema-aware NL-to-SQL model to improve SQL accuracy and consistency.
+7. **Model fallback strategy:** Use a small model first, then escalate to a stronger model only when confidence/validation is low.
 
 
 ## License
