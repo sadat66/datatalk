@@ -63,7 +63,7 @@ function ResultTable({ rows }: { rows: Record<string, unknown>[] }) {
   if (!rows.length) return null;
 
   return (
-    <div className="mt-3 overflow-x-auto rounded-md border border-border">
+    <div className="mt-3 overflow-hidden rounded-md border border-border">
       <Table>
         <TableHeader>
           <TableRow>

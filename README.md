@@ -35,7 +35,6 @@ Add your recorded walkthrough (5–10 minutes) here after you upload it, for exa
 
 - Open the [live demo](https://datatalk-three.vercel.app/) **or** run locally after **Setup**.
 - Sign in with Supabase Auth.
-- Open a dashboard with live Northwind summary metrics.
 - Ask a question in chat and get a streamed answer backed by validated, read-only SQL.
 - Expand "Why this answer?" to inspect trust signals, validation steps, and the SQL that ran.
 - See visible failure modes when a question is ambiguous or unsafe.
@@ -90,16 +89,6 @@ Create `.env.local` in the project root.
 7. Start the app with `npm run dev`.
 8. Open [http://localhost:3000](http://localhost:3000).
 
-## Demo walkthrough (for reviewers)
-
-1. Landing page
-2. Sign up or log in
-3. Dashboard overview with live metrics
-4. One successful question, for example: `Top 5 customers by revenue in 1997`
-5. Expand `Why this answer?`
-6. Ask a follow-up or intentionally ambiguous question to show a clarification or safe failure
-7. Re-open the saved conversation
-
 ## Edge cases (manual QA)
 
 There is **no automated test suite** in this prototype; behavior is validated manually and through the staged pipeline.
@@ -125,11 +114,24 @@ There is **no automated test suite** in this prototype; behavior is validated ma
 - LLM output is treated as untrusted until it passes validation.
 - The app is designed to fail visibly instead of pretending uncertain answers are correct.
 
-## Tradeoffs And Future Work
+## Why I Built It This Way
 
-- The orchestration pipeline is for this demo, but **automated evaluation coverage is still light** — there is no Jest/Vitest suite in this repo; use **[EDGE_CASES.md](EDGE_CASES.md)** for manual pass/fail runs.
-- The current implementation is optimized for a Northwind-style schema rather than arbitrary warehouse onboarding.
-- Next improvements would be automated tests, golden-question eval harnesses, caching strategy, and sharper metric definitions.
+- **Trust-first over fluency:** The biggest product risk in text-to-SQL is confidently wrong numbers. I intentionally built a pipeline where SQL must pass deterministic checks before execution, then surfaced those checks in UI so reviewers can inspect evidence instead of trusting hidden logic.
+- **Depth over checklist breadth:** I chose to go deeper on query intelligence + reliability/trust rather than implement every optional idea at shallow quality. This made it possible to show end-to-end behavior for ambiguity handling, follow-up context, and SQL safety in one coherent demo.
+- **Scoped data contract:** I optimized for a Northwind-style schema and explicit semantic expectations to keep behavior predictable in a take-home timeframe. Generalized schema onboarding is valuable, but this scope gave better signal on reasoning quality and guardrails.
+- **Visible failure modes:** I preferred explicit clarifications and safe failures over fallback guesses. In analytics UX, "I need clarification" is usually better than an elegant but fabricated answer.
+- **Reviewability as a feature:** The "Why this answer?" panel exists to make internal decisions inspectable (validation and execution evidence), because this assignment asks not just for answers but for explainable behavior.
+
+## What I Would Improve Next
+
+1. **Automated eval harness (highest priority):** Add golden-question suites (including adversarial prompts), SQL/result assertions, and CI gating so regressions are caught automatically instead of relying on manual runs in [EDGE_CASES.md](EDGE_CASES.md).
+2. **Broader schema portability:** Move from Northwind-focused assumptions to metadata-driven onboarding (introspection + semantic config), so the same system works across arbitrary warehouse schemas.
+3. **Stronger observability:** Add structured traces for clarification rate, validation reject categories, execution latency, and answer acceptance rate to make quality/performance tradeoffs measurable.
+4. **Performance and cost controls:** Introduce query/result caching, prompt-token budgets, and model-routing policies to reduce latency and API cost while preserving trust guarantees.
+5. **Tighter metric semantics:** Formalize canonical business metric definitions (for example revenue, discount handling, returns) to avoid subtle drift between natural-language intent and SQL implementation.
+6. **Fine-tuned NL-to-SQL model:** This prototype currently uses a general-purpose LLM with prompt + validation guardrails (not a fine-tuned NL-to-SQL model). A clear next improvement is to train/adapt a schema-aware NL-to-SQL model to improve SQL accuracy and consistency.
+7. **Model fallback strategy:** Use a small model first, then escalate to a stronger model only when confidence/validation is low.
+
 
 ## License
 
