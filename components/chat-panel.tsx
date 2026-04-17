@@ -43,6 +43,14 @@ type BrowserSpeechRecognition = {
 };
 
 type BrowserSpeechRecognitionCtor = new () => BrowserSpeechRecognition;
+type BrowserSpeechErrorCode =
+  | "aborted"
+  | "audio-capture"
+  | "network"
+  | "no-speech"
+  | "not-allowed"
+  | "service-not-allowed"
+  | string;
 
 function resolveBrowserSpeechCtor(): BrowserSpeechRecognitionCtor | null {
   if (typeof window === "undefined") return null;
@@ -71,6 +79,22 @@ function useTtsSupported(): boolean {
     () => typeof window !== "undefined" && "speechSynthesis" in window,
     () => false,
   );
+}
+
+function toSpeechFailureMessage(errorCode: BrowserSpeechErrorCode | undefined): string {
+  switch (errorCode) {
+    case "not-allowed":
+    case "service-not-allowed":
+      return "Microphone permission is blocked. Allow mic access for this site, then try Voice again.";
+    case "audio-capture":
+      return "No microphone is available. Check your device audio input and browser settings.";
+    case "no-speech":
+      return "No speech was detected. Try again and speak after the recording starts.";
+    case "network":
+      return "Speech recognition network error. Check your connection and retry.";
+    default:
+      return `Browser speech failed: ${errorCode ?? "unknown error"}`;
+  }
 }
 
 type ChatPanelProps = {
@@ -316,6 +340,11 @@ export function ChatPanel({
 
     try {
       setError(null);
+      if (navigator.mediaDevices?.getUserMedia) {
+        // Prompt for mic permission up front so recognition.start() does not fail with a vague not-allowed.
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+      }
       let transcript = "";
       const recognition = new SpeechCtor();
       speechRecognitionRef.current = recognition;
@@ -339,7 +368,8 @@ export function ChatPanel({
       };
       recognition.onerror = (event) => {
         const ev = event as { error?: string };
-        setError(`Browser speech failed: ${ev.error ?? "unknown error"}`);
+        if (ev.error === "aborted") return;
+        setError(toSpeechFailureMessage(ev.error));
       };
       recognition.onend = () => {
         const text = transcript.trim();
@@ -355,6 +385,18 @@ export function ChatPanel({
       recognition.start();
       setRecording(true);
     } catch (e) {
+      if (e instanceof DOMException) {
+        if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
+          setError(
+            "Microphone permission is blocked. Allow mic access for this site, then try Voice again.",
+          );
+          return;
+        }
+        if (e.name === "NotFoundError") {
+          setError("No microphone is available. Check your device audio input and browser settings.");
+          return;
+        }
+      }
       setError(e instanceof Error ? e.message : "Browser speech start failed");
     }
   }
