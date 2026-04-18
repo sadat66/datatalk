@@ -25,11 +25,9 @@ The prototype goes deep on **two tracks** from the assignment:
 - **Depth over breadth:** Deliberately not a shallow checklist of every optional track; see [plan.md](plan.md) for scope and out-of-scope notes (e.g. no custom model fine-tuning in this repo).
 - **Show your work:** Primary surfaces are the chat UI and the **“Why this answer?”** panel (validation, execution, confidence-style reasoning).
 
-## Demo video
+## Video walkthrough
 
-Add your recorded walkthrough (5–10 minutes) here after you upload it, for example:
-
-- **Demo:** *(link — e.g. Loom or unlisted YouTube)*
+**[DataTalk walkthrough](https://youtu.be/cZfSy20r30A)** — recorded demo on YouTube (about 5–10 minutes).
 
 ## What Reviewers Can Expect
 
